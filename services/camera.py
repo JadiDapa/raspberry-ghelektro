@@ -1,17 +1,3 @@
-"""
-Camera service — USB webcam on the gantry tool head.
-
-Two responsibilities:
-  1. MJPEG live stream  — continuously reads frames, streams to dashboard
-  2. Snapshot capture   — grabs a fresh frame after gantry stabilizes, saves to disk
-
-Stub mode:
-  If no camera is found on startup, generates a synthetic frame so the
-  rest of the system still works during development.
-  Controlled by STUB_MODE — the service sets it automatically based on
-  whether OpenCV can open the device. You don't need to flip it manually.
-"""
-
 import asyncio
 import os
 import threading
@@ -25,7 +11,7 @@ from config import settings
 
 # ─── Config (from settings) ───────────────────────────────────────────────────
 
-CAMERA_INDEX = settings.camera_index
+CAMERA_DEVICE = settings.camera_device
 FRAME_WIDTH = settings.camera_width
 FRAME_HEIGHT = settings.camera_height
 TARGET_FPS = settings.camera_fps
@@ -137,14 +123,18 @@ def _generate_stub_frame() -> bytes:
 def _capture_loop():
     global _running, STUB_MODE
 
-    cap = cv2.VideoCapture(CAMERA_INDEX)
+    cap = cv2.VideoCapture(CAMERA_DEVICE, cv2.CAP_V4L2)
+
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
     cap.set(cv2.CAP_PROP_FPS, TARGET_FPS)
 
+    print("[camera] opening /dev/video0 ...")
+    print("[camera] opened:", cap.isOpened())
+
     if not cap.isOpened():
         print(
-            f"[camera] WARNING: could not open /dev/video{CAMERA_INDEX} — falling back to stub"
+            f"[camera] WARNING: could not open /dev/video{CAMERA_DEVICE} — falling back to stub"
         )
         STUB_MODE = True
         cap.release()
@@ -158,7 +148,7 @@ def _capture_loop():
     actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     print(
-        f"[camera] opened /dev/video{CAMERA_INDEX} at {actual_w}x{actual_h} {TARGET_FPS}fps"
+        f"[camera] opened /dev/video{CAMERA_DEVICE} at {actual_w}x{actual_h} {TARGET_FPS}fps"
     )
 
     interval = 1.0 / TARGET_FPS

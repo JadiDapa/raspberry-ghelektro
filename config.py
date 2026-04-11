@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     soil_uart_baudrate: int = 115200
 
     # Camera
-    camera_index: int = 0
+    camera_device: str = "/dev/video0"
     camera_width: int = 1280
     camera_height: int = 720
     camera_fps: int = 15
