@@ -1,0 +1,21 @@
+# Environment
+.env
+
+# Python cache — all directories recursively
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+
+# Virtual environment
+venv/
+.venv/
+
+# Database
+*.db
+
+# Captured images
+static/images/
+
+# YOLO model (large binary — download separately on Pi)
+*.pt
