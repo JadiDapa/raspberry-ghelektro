@@ -8,7 +8,7 @@ from services.camera import (
     _buffer,
     _running,
     STUB_MODE,
-    CAMERA_INDEX,
+    CAMERA_DEVICE,
     TARGET_FPS,
     FRAME_WIDTH,
     FRAME_HEIGHT,
@@ -39,7 +39,9 @@ async def snapshot():
     frame = await loop.run_in_executor(None, _buffer.wait_for_frame, 3.0)
     if frame is None:
         raise HTTPException(503, "Camera not ready — no frame available")
-    return Response(content=frame, media_type="image/jpeg", headers={"Cache-Control": "no-cache"})
+    return Response(
+        content=frame, media_type="image/jpeg", headers={"Cache-Control": "no-cache"}
+    )
 
 
 @router.get("/status")
@@ -49,7 +51,7 @@ async def camera_status():
         "running": _running,
         "has_frame": _buffer.read() is not None,
         "stub_mode": STUB_MODE,
-        "camera_index": CAMERA_INDEX,
+        "camera_device": CAMERA_DEVICE,
         "resolution": f"{FRAME_WIDTH}x{FRAME_HEIGHT}",
         "target_fps": TARGET_FPS,
     }

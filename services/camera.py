@@ -125,12 +125,16 @@ def _capture_loop():
 
     cap = cv2.VideoCapture(CAMERA_DEVICE, cv2.CAP_V4L2)
 
+    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))  # type: ignore
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
     cap.set(cv2.CAP_PROP_FPS, TARGET_FPS)
 
-    print("[camera] opening /dev/video0 ...")
+    print(f"[camera] opening {CAMERA_DEVICE} ...")
     print("[camera] opened:", cap.isOpened())
+
+    if cap.isOpened():
+        print("[camera] backend:", cap.getBackendName())
 
     if not cap.isOpened():
         print(
@@ -162,8 +166,11 @@ def _capture_loop():
 
         ret, frame = cap.read()
         if not ret:
-            print("[camera] frame read failed — retrying")
-            time.sleep(0.1)
+            print("[camera] frame read failed — reconnecting...")
+            cap.release()
+            time.sleep(1)
+            cap = cv2.VideoCapture(CAMERA_DEVICE, cv2.CAP_V4L2)
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))  # type: ignore
             continue
 
         _, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
