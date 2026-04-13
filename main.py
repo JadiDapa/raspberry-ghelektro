@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 
 from config import settings
 from db.database import init_db
-from routers import sessions, camera, gantry, info, plants
+from routers import sessions, camera, gantry, info, plants, logs
 from services import camera as camera_service
 from services import gantry as gantry_service
 from services import yolo_service
@@ -52,6 +52,7 @@ app.include_router(camera.router)
 app.include_router(gantry.router)
 app.include_router(info.router)
 app.include_router(plants.router)
+app.include_router(logs.router)
 
 
 @app.get("/health")

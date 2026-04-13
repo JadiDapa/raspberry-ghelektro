@@ -1,6 +1,7 @@
 """
 Session service — orchestrates the full scan loop.
-Persists every step to the database and emits SSE events.
+Persists every step to the database, emits SSE events,
+and logs every action to logs/session_<id>.log via SessionLogger.
 """
 
 import asyncio
@@ -10,21 +11,27 @@ from datetime import datetime, timezone
 from config import settings, PLANT_GRID
 from services import event_bus, hardware
 from services import gantry as gantry_service
+from services.session_logger import SessionLogger
+from services.soil_service import col_to_sensor
 from db.database import AsyncSessionLocal
 from db import crud
 
 
 async def run_session(session_id: str) -> None:
-    print(f"\n{'='*50}")
-    print(f"[session] starting {session_id}")
-    print(f"{'='*50}\n")
-
+    log = SessionLogger(session_id)
     os.makedirs(os.path.join(settings.images_dir, session_id), exist_ok=True)
     plant_results = []
 
     async with AsyncSessionLocal() as db:
         try:
+            # ── Session start ──────────────────────────────────────────────
             await crud.set_session_running(db, session_id)
+            log.log_session_start(total_plants=len(PLANT_GRID))
+            log.info(
+                f"image dir created  path=static/images/{session_id}", tag="SESSION"
+            )
+            log.info(f"log file           path={log.path}", tag="SESSION")
+
             await event_bus.emit(
                 session_id,
                 {
@@ -36,15 +43,19 @@ async def run_session(session_id: str) -> None:
             )
             await asyncio.sleep(0.1)
 
-            # Enable stepper drivers — must happen before HOME or any MOVE
+            # ── Hardware init ──────────────────────────────────────────────
+            log.step("MOTORS", "enabling stepper drivers")
             await gantry_service.enable_motors()
+            log.log_motors_enabled()
 
-            # Turn water pump on for the entire session
+            log.step("PUMP", "turning water pump ON")
             await gantry_service.set_relay("dc", on=True)
-            print("[session] water pump ON")
+            log.log_pump_on()
 
-            # Home gantry
+            # ── Homing ────────────────────────────────────────────────────
+            log.log_homing_start()
             position = await gantry_service.home()
+            log.log_homing_done(position)
             await event_bus.emit(
                 session_id,
                 {
@@ -58,15 +69,16 @@ async def run_session(session_id: str) -> None:
                 },
             )
 
+            # ── Plant scan loop ───────────────────────────────────────────
             for plant_id, (row, col) in enumerate(PLANT_GRID, start=1):
-                print(
-                    f"\n--- Plant {plant_id}/{len(PLANT_GRID)} (row={row}, col={col}) ---"
-                )
+                log.log_plant_start(plant_id, len(PLANT_GRID), row, col)
                 await crud.create_plant_scan(db, session_id, plant_id, row, col)
 
-                # Move gantry above plant
+                # — Gantry move —
+                log.log_gantry_move_start(plant_id, row, col)
                 await gantry_service.move_to_plant(row, col)
                 state = gantry_service.get_state()
+                log.log_gantry_move_done(state["x"], state["y"], state["z"])
                 await event_bus.emit(
                     session_id,
                     {
@@ -81,11 +93,17 @@ async def run_session(session_id: str) -> None:
                     },
                 )
 
-                # Camera + YOLO
+                # — Camera capture —
+                log.log_camera_capture_start(plant_id)
                 image_path = await hardware.capture_image(plant_id, session_id)
                 image_url = f"/static/images/{session_id}/plant_{plant_id:02d}.jpg"
+                log.log_camera_capture_done(image_path)
+
+                # — YOLO inference —
+                log.log_yolo_start(image_path)
                 detections = await hardware.run_yolo(image_path)
                 total_fruits = sum(d["count"] for d in detections)
+                log.log_yolo_done(detections, total_fruits)
                 await crud.update_plant_scan_vision(
                     db, session_id, plant_id, image_url, detections
                 )
@@ -101,9 +119,16 @@ async def run_session(session_id: str) -> None:
                     },
                 )
 
-                # Sensors
+                # — TOF height sensor —
+                log.log_tof_start()
                 height_cm = await hardware.read_tof_distance()
+                log.log_tof_done(height_cm)
+
+                # — Soil moisture sensor —
+                sensor_idx = col_to_sensor(col)
+                log.log_moisture_start(col, sensor_idx)
                 moisture_pct = await hardware.read_soil_moisture(col)
+                log.log_moisture_done(moisture_pct, col)
                 await event_bus.emit(
                     session_id,
                     {
@@ -115,12 +140,14 @@ async def run_session(session_id: str) -> None:
                     },
                 )
 
-                # Fuzzy + valve
+                # — Watering decision —
                 valve_duration, reason = hardware.compute_watering_duration(
                     moisture_pct
                 )
+                log.log_watering_decision(moisture_pct, valve_duration, reason)
                 if valve_duration > 0:
                     await hardware.open_valve(valve_duration)
+                    log.log_valve_done(valve_duration)
                 await crud.update_plant_scan_sensors(
                     db,
                     session_id,
@@ -152,8 +179,11 @@ async def run_session(session_id: str) -> None:
                         "valve_duration_sec": valve_duration,
                     }
                 )
+                log.log_plant_done(plant_id)
 
+            # ── Session complete ───────────────────────────────────────────
             summary = _build_summary(plant_results)
+            log.log_summary(summary)
             await crud.complete_session(db, session_id, summary)
             await event_bus.emit(
                 session_id,
@@ -164,17 +194,25 @@ async def run_session(session_id: str) -> None:
                 },
             )
 
-            # Turn water pump off — session finished
+            log.step("PUMP", "turning water pump OFF")
             await gantry_service.set_relay("dc", on=False)
-            print("[session] water pump OFF")
-            # Disable stepper drivers — motors are idle, no need to hold current
+            log.log_pump_off(reason="session complete")
+
+            log.step("MOTORS", "disabling stepper drivers")
             await gantry_service.disable_motors()
-            print(f"\n[session] {session_id} complete")
+            log.log_motors_disabled()
+
+            log.log_session_complete()
 
         except asyncio.CancelledError:
+            log.warn("SESSION", "CancelledError received — stopping cleanly")
+
             await gantry_service.set_relay("dc", on=False)
-            print("[session] water pump OFF (cancelled)")
+            log.log_pump_off(reason="cancelled")
+
             await gantry_service.disable_motors()
+            log.log_motors_disabled()
+
             await crud.set_session_stopped(db, session_id)
             await event_bus.emit(
                 session_id,
@@ -184,12 +222,17 @@ async def run_session(session_id: str) -> None:
                     "message": "cancelled",
                 },
             )
+            log.log_session_stopped()
 
         except Exception as e:
-            print(f"[session] ERROR: {e}")
+            log.error("SESSION", f"unhandled exception: {e}")
+
             await gantry_service.set_relay("dc", on=False)
-            print("[session] water pump OFF (error)")
+            log.log_pump_off(reason="error")
+
             await gantry_service.disable_motors()
+            log.log_motors_disabled()
+
             await crud.set_session_error(db, session_id, str(e))
             await event_bus.emit(
                 session_id,
@@ -199,10 +242,12 @@ async def run_session(session_id: str) -> None:
                     "message": str(e),
                 },
             )
+            log.log_session_error(str(e))
 
         finally:
             await asyncio.sleep(2)
             event_bus.destroy(session_id)
+            log.close()
 
 
 def _build_summary(plant_results: list[dict]) -> dict:
@@ -212,14 +257,12 @@ def _build_summary(plant_results: list[dict]) -> dict:
     heights = [p["height_cm"] for p in plant_results]
     moisture = [p["moisture_pct"] for p in plant_results]
 
-    # Count all detections across all plants per class
     ripeness = {"ripe": 0, "turning": 0, "unripe": 0, "broken": 0}
     for p in plant_results:
         for d in p["detections"]:
             if d["cls"] in ripeness:
                 ripeness[d["cls"]] += d["count"]
 
-    # Harvest ready = plants with more than 5 ripe fruits
     harvest_ready = [
         {
             "plant_id": p["plant_id"],
