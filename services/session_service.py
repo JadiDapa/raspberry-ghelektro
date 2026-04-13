@@ -48,10 +48,6 @@ async def run_session(session_id: str) -> None:
             await gantry_service.enable_motors()
             log.log_motors_enabled()
 
-            log.step("PUMP", "turning water pump ON")
-            await gantry_service.set_relay("dc", on=True)
-            log.log_pump_on()
-
             # ── Homing ────────────────────────────────────────────────────
             log.log_homing_start()
             position = await gantry_service.home()
@@ -68,6 +64,12 @@ async def run_session(session_id: str) -> None:
                     },
                 },
             )
+
+            # FIX: Turn pump on AFTER homing — it was before, which meant
+            # the pump ran during the entire homing sequence unnecessarily.
+            log.step("PUMP", "turning water pump ON")
+            await gantry_service.set_relay("dc", on=True)
+            log.log_pump_on()
 
             # ── Plant scan loop ───────────────────────────────────────────
             for plant_id, (row, col) in enumerate(PLANT_GRID, start=1):

@@ -55,13 +55,20 @@ def connect():
     """Open serial port. Call once on startup."""
     global _ser
     try:
+        # FIX: Open with dsrdtr/rtscts disabled, then deassert DTR as a property.
+        # pyserial does not accept dtr= in the constructor — it must be set after open.
+        # DTR toggling on port-open resets the ESP32 via its EN pin, causing it
+        # to miss the first command sent right after connect().
         _ser = serial.Serial(
             port=settings.esp32_port,
             baudrate=settings.esp32_baudrate,
-            timeout=SERIAL_READ_TIMEOUT,  # short timeout → deadline loop ticks every 1 s
+            timeout=SERIAL_READ_TIMEOUT,
+            dsrdtr=False,
+            rtscts=False,
         )
-        # Wait for ESP32 to finish booting (DTR reset on port open), then clear buffer
-        time.sleep(2.0)
+        _ser.dtr = False  # deassert DTR — prevents ESP32 reset on port open
+        # Wait for ESP32 to finish booting. 3 s covers a cold-start.
+        time.sleep(3.0)
         _ser.reset_input_buffer()
         print(f"[gantry] connected → {settings.esp32_port} @ {settings.esp32_baudrate}")
     except Exception as e:
@@ -277,7 +284,22 @@ async def enable_motors() -> dict:
     """
     Enable all stepper drivers (DRV8825 EN pin LOW).
     Call at session start — before HOME or any MOVE.
+
+    FIX: Ping first with retries to confirm ESP32 is responsive before
+    sending EN. If the ESP32 just booted (e.g. after a reconnect) it may
+    still be printing boot messages. Retry up to 5 times with 1 s gaps.
     """
+    for attempt in range(1, 6):
+        alive = await ping()
+        if alive:
+            break
+        print(f"[gantry] PING attempt {attempt}/5 failed — waiting 1 s")
+        await asyncio.sleep(1.0)
+    else:
+        raise RuntimeError(
+            "ESP32 is not responding to PING — check USB connection and firmware"
+        )
+
     result = await _run(_send, "EN on=1")
     print("[gantry] stepper drivers ENABLED")
     return result
