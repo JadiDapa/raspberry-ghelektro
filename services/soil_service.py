@@ -28,9 +28,14 @@ _lock = threading.Lock()
 # Sensor zone mapping — which sensor index covers which columns
 # cols 0–2 → sensor 0, cols 3–5 → sensor 1, cols 6–7 → sensor 2
 _COL_TO_SENSOR = {
-    0: 0, 1: 0, 2: 0,
-    3: 1, 4: 1, 5: 1,
-    6: 2, 7: 2,
+    0: 0,
+    1: 0,
+    2: 0,
+    3: 1,
+    4: 1,
+    5: 1,
+    6: 2,
+    7: 2,
 }
 
 
@@ -43,9 +48,13 @@ def connect():
             baudrate=settings.soil_uart_baudrate,
             timeout=5.0,
         )
-        import time; time.sleep(2.0)
+        import time
+
+        time.sleep(2.0)
         _ser.reset_input_buffer()
-        print(f"[soil] connected → {settings.soil_uart_port} @ {settings.soil_uart_baudrate}")
+        print(
+            f"[soil] connected → {settings.soil_uart_port} @ {settings.soil_uart_baudrate}"
+        )
     except Exception as e:
         print(f"[soil] WARNING: could not open UART — {e}")
         print("[soil] running in stub mode")
@@ -62,19 +71,28 @@ def disconnect():
 
 # ─── Low-level send/receive ───────────────────────────────────────────────────
 
-def _send(command: str) -> dict:
+
+def _send(command: str, timeout_s: float = 10.0) -> dict:
     """Send a command and wait for OK/ERR. Runs in a thread."""
     if _ser is None or not _ser.is_open:
         import random
+
         print(f"[soil:stub] {command}")
         return {"stub": True, "pct": round(random.uniform(30.0, 80.0), 1)}
+
+    import time
 
     with _lock:
         _ser.reset_input_buffer()
         _ser.write((command.strip() + "\n").encode())
         print(f"[soil] → {command}")
 
+        deadline = time.monotonic() + timeout_s
         while True:
+            if time.monotonic() > deadline:
+                raise RuntimeError(
+                    f"timeout ({timeout_s:.0f}s) waiting for response to soil command: {command!r}"
+                )
             raw = _ser.readline().decode(errors="replace").strip()
             if not raw:
                 continue
@@ -94,6 +112,7 @@ async def _run(fn, *args):
 
 
 # ─── Public API ───────────────────────────────────────────────────────────────
+
 
 def col_to_sensor(col: int) -> int:
     """Return the sensor index (0–2) that covers a given plant column."""

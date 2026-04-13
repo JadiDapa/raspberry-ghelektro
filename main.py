@@ -17,6 +17,26 @@ from services import soil_service
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+
+    # Reset any sessions left as "running" from a previous crashed/restarted server.
+    # Without this, _active_session_id stays None but the DB shows running, and the
+    # concurrent-session guard in sessions.py won't trigger — but more importantly,
+    # those orphaned sessions will never complete. Mark them as errors so the UI
+    # shows the correct state and new sessions can start cleanly.
+    from db.database import AsyncSessionLocal
+    from db import crud as _crud
+    from sqlalchemy import select, update
+    from db.models import Session as SessionModel
+
+    async with AsyncSessionLocal() as db:
+        await db.execute(
+            update(SessionModel)
+            .where(SessionModel.status == "running")
+            .values(status="error", notes="server restarted — session aborted")
+        )
+        await db.commit()
+    print("[main] orphaned running sessions reset to error")
+
     camera_service.start()
     gantry_service.connect()  # ESP32 #1 — /dev/ttyUSB0
     soil_service.connect()  # ESP32 #2 — /dev/ttyAMA0

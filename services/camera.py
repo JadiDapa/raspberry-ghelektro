@@ -138,7 +138,7 @@ def _capture_loop():
 
     if not cap.isOpened():
         print(
-            f"[camera] WARNING: could not open /dev/video{CAMERA_DEVICE} — falling back to stub"
+            f"[camera] WARNING: could not open {CAMERA_DEVICE} — falling back to stub"
         )
         STUB_MODE = True
         cap.release()
