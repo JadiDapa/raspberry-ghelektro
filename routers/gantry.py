@@ -13,6 +13,26 @@ class MoveRequest(BaseModel):
     speed: int = Field(500, ge=1, le=5000, description="Travel speed in mm/min")
 
 
+@router.get("/ping")
+async def ping():
+    """
+    Diagnostic: check if ESP32 is reachable over USB serial.
+    Useful for verifying the connection before starting a session.
+    Returns {"alive": true} if the ESP32 responds to PING within 10 s.
+    """
+    alive = await gantry_service.ping()
+    return {
+        "alive": alive,
+        "port": gantry_service._ser.port if gantry_service._ser else None,
+    }
+
+
+@router.get("/limits")
+async def limits():
+    """Read limit switch states directly from ESP32 (diagnostic)."""
+    return await gantry_service.get_limits()
+
+
 @router.post("/move")
 async def move(body: MoveRequest):
     """Move gantry to an absolute X, Y, Z position in mm."""

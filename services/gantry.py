@@ -66,11 +66,16 @@ def connect():
         _ser.timeout = SERIAL_READ_TIMEOUT
         _ser.dsrdtr = False
         _ser.rtscts = False
-        _ser.dtr = False  # set LOW before open() so DTR never pulses HIGH
+        _ser.dtr = False  # LOW = no reset pulse on open (active-low reset on ESP32)
+        _ser.rts = False  # FIX: RTS also resets ESP32 on many CH340/CP2102 boards.
+        #                        Must be False BEFORE open(), same reason as dtr=False.
         _ser.open()
 
-        # Flush any boot messages the ESP32 may have already sent
-        time.sleep(3.0)
+        # Give the ESP32 time to finish booting.
+        # 5 s covers: CH340 enumeration (~0.5 s) + ESP32 ROM boot (~0.5 s) +
+        # Arduino setup() including VL53L1X init (~1-2 s) + margin.
+        # Old value was 3 s which was marginal when the TOF sensor is slow to init.
+        time.sleep(5.0)
         _ser.reset_input_buffer()
         print(f"[gantry] connected → {settings.esp32_port} @ {settings.esp32_baudrate}")
     except Exception as e:
@@ -319,13 +324,30 @@ async def enable_motors() -> dict:
     """
     Enable all stepper drivers (DRV8825 EN pin LOW).
     Call at session start — before HOME or any MOVE.
-    Sends a quick PING first to confirm the ESP32 is alive.
+    Sends PING first to confirm the ESP32 is alive.
+
+    Retry policy: 3 attempts × 5 s apart.
+    Rationale: the ESP32 takes up to ~5 s to finish booting (ROM + setup() +
+    VL53L1X init). If the server starts at the same moment the ESP32 is
+    powered, connect()'s 5 s sleep may barely cover it. Retrying here makes
+    session start resilient without increasing the startup delay further.
     """
-    alive = await ping()
-    if not alive:
+    for attempt in range(1, 4):  # 3 attempts
+        alive = await ping()
+        if alive:
+            break
+        if attempt < 3:
+            print(
+                f"[gantry] PING attempt {attempt}/3 failed — "
+                f"ESP32 may still be booting, retrying in 5 s..."
+            )
+            await asyncio.sleep(5.0)
+    else:
         raise RuntimeError(
-            "ESP32 not responding to PING — check USB cable and firmware. "
-            "If the board was just connected, wait 5 s and retry."
+            "ESP32 not responding to PING after 3 attempts — "
+            "check USB cable and firmware. "
+            "Try: (1) replug USB, (2) reflash firmware, "
+            "(3) verify /dev/ttyUSB0 with: ls -l /dev/ttyUSB*"
         )
     result = await _run(_send, "EN on=1")
     print("[gantry] stepper drivers ENABLED")

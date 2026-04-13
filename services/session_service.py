@@ -223,11 +223,19 @@ async def run_session(session_id: str) -> None:
         except asyncio.CancelledError:
             log.warn("SESSION", "CancelledError received — stopping cleanly")
 
-            await gantry_service.set_relay("dc", on=False)
-            log.log_pump_off(reason="cancelled")
+            try:
+                await gantry_service.set_relay("dc", on=False)
+                log.log_pump_off(reason="cancelled")
+            except Exception as cleanup_err:
+                log.warn("SESSION", f"cleanup: could not turn off pump — {cleanup_err}")
 
-            await gantry_service.disable_motors()
-            log.log_motors_disabled()
+            try:
+                await gantry_service.disable_motors()
+                log.log_motors_disabled()
+            except Exception as cleanup_err:
+                log.warn(
+                    "SESSION", f"cleanup: could not disable motors — {cleanup_err}"
+                )
 
             await crud.set_session_stopped(db, session_id)
             await event_bus.emit(
@@ -243,11 +251,23 @@ async def run_session(session_id: str) -> None:
         except Exception as e:
             log.error("SESSION", f"unhandled exception: {e}")
 
-            await gantry_service.set_relay("dc", on=False)
-            log.log_pump_off(reason="error")
+            # BUG FIX: wrap every cleanup call in its own try/except.
+            # If the primary failure was a serial timeout (e.g. ESP32 not responding),
+            # these calls would ALSO time out and raise a second unhandled exception
+            # that showed up as "Task exception was never retrieved" in the logs.
+            try:
+                await gantry_service.set_relay("dc", on=False)
+                log.log_pump_off(reason="error")
+            except Exception as cleanup_err:
+                log.warn("SESSION", f"cleanup: could not turn off pump — {cleanup_err}")
 
-            await gantry_service.disable_motors()
-            log.log_motors_disabled()
+            try:
+                await gantry_service.disable_motors()
+                log.log_motors_disabled()
+            except Exception as cleanup_err:
+                log.warn(
+                    "SESSION", f"cleanup: could not disable motors — {cleanup_err}"
+                )
 
             await crud.set_session_error(db, session_id, str(e))
             await event_bus.emit(
