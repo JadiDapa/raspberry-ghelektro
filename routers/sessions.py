@@ -19,6 +19,10 @@ router = APIRouter(prefix="/sessions", tags=["sessions"])
 # calling /stop only updates the DB but the gantry keeps moving.
 _tasks: dict[str, asyncio.Task] = {}
 
+# Global guard — only one session may run at a time.
+# The gantry has one serial port; concurrent sessions corrupt each other's commands.
+_active_session_id: str | None = None
+
 SSE_HEADERS = {
     "Cache-Control": "no-cache",
     "X-Accel-Buffering": "no",
@@ -64,20 +68,35 @@ async def get_session(session_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.post("/{session_id}/start")
 async def start_session(session_id: str, db: AsyncSession = Depends(get_db)):
+    global _active_session_id
+
     row = await crud.get_session(db, session_id)
     if not row:
         raise HTTPException(404, "Session not found")
-    if event_bus.exists(session_id):
-        raise HTTPException(409, "Session already running")
     if row.status != "created":
         raise HTTPException(409, f"Cannot start session with status '{row.status}'")
 
+    # Guard: only one session at a time — one gantry, one serial port.
+    if _active_session_id is not None:
+        raise HTTPException(
+            409,
+            f"Another session ({_active_session_id}) is already running. "
+            "Stop it first before starting a new one.",
+        )
+
+    _active_session_id = session_id
     event_bus.create(session_id)
     task = asyncio.create_task(session_service.run_session(session_id))
     _tasks[session_id] = task
 
     # Auto-clean the registry when the task finishes naturally
-    task.add_done_callback(lambda t: _tasks.pop(session_id, None))
+    def _on_done(t: asyncio.Task) -> None:
+        global _active_session_id
+        _tasks.pop(session_id, None)
+        if _active_session_id == session_id:
+            _active_session_id = None
+
+    task.add_done_callback(_on_done)
 
     return {"session_id": session_id, "status": "running"}
 

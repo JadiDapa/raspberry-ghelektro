@@ -48,6 +48,20 @@ async def run_session(session_id: str) -> None:
             await gantry_service.enable_motors()
             log.log_motors_enabled()
 
+            # ── Limit switch sanity check ──────────────────────────────────
+            # Read limit switches before homing. If any are already triggered
+            # (LOW = active) the gantry is sitting on a switch — homing will
+            # fail immediately. Log the states so the user can diagnose wiring.
+            log.step("LIMITS", "reading limit switch states before homing")
+            limits = await gantry_service.get_limits()
+            log.info(f"limit switch states: {limits}", tag="LIMITS")
+            already_triggered = {k: v for k, v in limits.items() if v == 0}
+            if already_triggered:
+                log.warn(
+                    "LIMITS",
+                    f"switches already LOW at start: {already_triggered} — gantry may be at home already or switch is wired incorrectly",
+                )
+
             # ── Homing ────────────────────────────────────────────────────
             log.log_homing_start()
             position = await gantry_service.home()

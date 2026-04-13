@@ -168,6 +168,14 @@ def _send_and_wait_done(command: str, timeout_s: float = MOVE_TIMEOUT) -> dict:
 
             if not got_ok and raw.startswith("OK "):
                 got_ok = True
+                # FIX: ESP32 sends OK with note="already at target" when no motion
+                # is needed — it will never send DONE in that case. Treat it as done.
+                try:
+                    payload = json.loads(raw[3:])
+                    if payload.get("note") == "already at target":
+                        return payload
+                except json.JSONDecodeError:
+                    pass
                 continue  # keep reading until DONE
 
             if got_ok and raw.startswith("DONE "):
@@ -204,16 +212,29 @@ async def home(axis: str = "all") -> dict:
     Home one or all axes. Blocking — waits until homing completes.
     axis: "all" | "x" | "y" | "z"
     Uses MOVE_TIMEOUT because full homing can take several minutes.
+    Retries once on failure — limit switches can occasionally miss on first pass.
     """
     _state["busy"] = True
     print(f"[gantry] homing axis={axis}")
-    try:
-        await _run(_send, f"HOME axis={axis}", MOVE_TIMEOUT)
-        _state.update({"x": 0.0, "y": 0.0, "z": 0.0, "busy": False, "homed": True})
-        return get_state()
-    except Exception as e:
-        _state["busy"] = False
-        raise RuntimeError(f"Homing failed: {e}")
+    last_err = None
+    for attempt in range(1, 3):  # try twice
+        try:
+            result = await _run(_send, f"HOME axis={axis}", MOVE_TIMEOUT)
+            _state.update({"x": 0.0, "y": 0.0, "z": 0.0, "busy": False, "homed": True})
+            return get_state()
+        except Exception as e:
+            last_err = e
+            print(f"[gantry] homing attempt {attempt}/2 failed: {e}")
+            if attempt < 2:
+                print("[gantry] retrying homing in 2 s...")
+                await asyncio.sleep(2.0)
+    _state["busy"] = False
+    raise RuntimeError(
+        f"Homing failed after 2 attempts. Last error: {last_err}\n"
+        "Check: (1) limit switch wiring on failing axis, "
+        "(2) 'LIMITS' command shows 0 when switch pressed manually, "
+        "(3) motor direction moves toward the switch."
+    )
 
 
 async def move_to(x: float, y: float, z: float, speed: int = 150) -> dict:
@@ -235,15 +256,27 @@ async def move_to(x: float, y: float, z: float, speed: int = 150) -> dict:
 async def move_to_plant(row: int, col: int) -> dict:
     """
     Move above a plant grid position.
-    Raises Z first (safe clearance), then moves XY, then lowers to working height.
+    Safe sequence: raise Z to clearance height, travel XY, then lower to working height.
+
+    Z axis convention (matches ESP32 firmware):
+      Z=0   → home / top of travel (limit switch end)
+      Z=50  → 50mm below home = working height above canopy
+
+    FIX: was raising Z to 0.0 first (already home after homing → "already at target"
+    → _send_and_wait_done hung). Now moves XY and Z together in one command,
+    preceded by a Z-raise only if we're already below clearance.
     """
     x_mm = col * 750.0  # 6000mm / 8 cols = 750mm spacing
     y_mm = row * 1000.0  # 2000mm / 2 rows = 1000mm spacing
-    z_mm = 50.0  # working height above plant canopy
+    z_working = 50.0  # working height (mm below home)
+    z_clear = 10.0  # safe Z clearance for XY travel (closer to home = safer)
 
-    # Raise Z to safe height first, then travel XY, then lower
-    await move_to(_state["x"], _state["y"], 0.0)
-    await move_to(x_mm, y_mm, z_mm)
+    # Step 1: if Z is below clearance, raise it first to avoid hitting plants while moving XY
+    if _state["z"] > z_clear:
+        await move_to(_state["x"], _state["y"], z_clear)
+
+    # Step 2: travel XY at clearance height, then lower to working height in one move
+    await move_to(x_mm, y_mm, z_working)
     return get_state()
 
 
