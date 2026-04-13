@@ -41,6 +41,7 @@ class Settings(BaseSettings):
 
     # ─── Timing stubs ──────────────────────────────────────────────────
     sensor_read_delay: float = 0.3
+    gantry_move_delay: float = 2.0  # ← add this
 
 
 settings = Settings()

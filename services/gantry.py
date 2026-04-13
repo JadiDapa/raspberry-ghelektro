@@ -42,7 +42,9 @@ def connect():
             timeout=5.0,
         )
         # Flush any boot messages from the ESP32
-        import time; time.sleep(2.0)
+        import time
+
+        time.sleep(2.0)
         _ser.reset_input_buffer()
         print(f"[gantry] connected → {settings.esp32_port} @ {settings.esp32_baudrate}")
     except Exception as e:
@@ -60,6 +62,7 @@ def disconnect():
 
 
 # ─── Low-level send/receive ───────────────────────────────────────────────────
+
 
 def _send(command: str) -> dict:
     """
@@ -98,7 +101,9 @@ def _send_and_wait_done(command: str) -> dict:
     """
     if _ser is None or not _ser.is_open:
         print(f"[gantry:stub] {command}")
-        import time; time.sleep(settings.gantry_move_delay)
+        import time
+
+        time.sleep(settings.gantry_move_delay)
         return {"ok": True, "stub": True}
 
     with _lock:
@@ -126,6 +131,7 @@ def _send_and_wait_done(command: str) -> dict:
 
 
 # ─── Public async API ─────────────────────────────────────────────────────────
+
 
 def get_state() -> dict:
     return dict(_state)
@@ -170,7 +176,9 @@ async def move_to(x: float, y: float, z: float, speed: int = 150) -> dict:
     _state["busy"] = True
     print(f"[gantry] moving → X={x} Y={y} Z={z} speed={speed}")
     try:
-        result = await _run(_send_and_wait_done, f"MOVE x={x} y={y} z={z} speed={speed}")
+        result = await _run(
+            _send_and_wait_done, f"MOVE x={x} y={y} z={z} speed={speed}"
+        )
         _state.update({"x": x, "y": y, "z": z, "busy": False})
         return get_state()
     except Exception as e:
@@ -183,9 +191,9 @@ async def move_to_plant(row: int, col: int) -> dict:
     Move above a plant grid position.
     Raises Z first (safe clearance), then moves XY, then lowers to working height.
     """
-    x_mm = col * 750.0   # 6000mm / 8 cols = 750mm spacing
+    x_mm = col * 750.0  # 6000mm / 8 cols = 750mm spacing
     y_mm = row * 1000.0  # 2000mm / 2 rows = 1000mm spacing
-    z_mm = 50.0          # working height above plant canopy
+    z_mm = 50.0  # working height above plant canopy
 
     # Raise Z first before XY travel (safe move — avoid hitting plants)
     await move_to(_state["x"], _state["y"], 0.0)
@@ -207,7 +215,9 @@ async def emergency_stop() -> dict:
 async def get_position() -> dict:
     """Read current XYZ position from ESP32."""
     result = await _run(_send, "POS")
-    _state.update({"x": result.get("x", 0), "y": result.get("y", 0), "z": result.get("z", 0)})
+    _state.update(
+        {"x": result.get("x", 0), "y": result.get("y", 0), "z": result.get("z", 0)}
+    )
     return get_state()
 
 
@@ -222,6 +232,26 @@ async def set_relay(channel: str, on: bool) -> dict:
     channel: "sol" (solenoid valve) | "dc" (water pump)
     """
     return await _run(_send, f"RELAY ch={channel} on={1 if on else 0}")
+
+
+async def enable_motors() -> dict:
+    """
+    Enable all stepper drivers (DRV8825 EN pin LOW).
+    Call at session start — before HOME or any MOVE.
+    """
+    result = await _run(_send, "EN on=1")
+    print("[gantry] stepper drivers ENABLED")
+    return result
+
+
+async def disable_motors() -> dict:
+    """
+    Disable all stepper drivers (DRV8825 EN pin HIGH).
+    Call at session end / stop / error — motors go unpowered and free-spin.
+    """
+    result = await _run(_send, "EN on=0")
+    print("[gantry] stepper drivers DISABLED")
+    return result
 
 
 async def read_tof() -> float | None:
