@@ -9,13 +9,32 @@ The ESP32 firmware uses this protocol:
 
 This module is the only place that talks to the serial port.
 All other code (session_service, routers) calls these async functions.
+
+Timeout design
+──────────────
+readline() uses a SHORT per-call timeout (SERIAL_READ_TIMEOUT = 1 s).
+When the ESP32 doesn't answer (or sends debug lines only), readline()
+returns "" every second. The _send() loop tracks a wall-clock deadline
+and raises RuntimeError("timeout") when COMMAND_TIMEOUT seconds pass
+without receiving an OK or ERR. This prevents the session from hanging
+silently forever.
+
+  COMMAND_TIMEOUT   = 10 s  — PING, EN, RELAY, POS, LIMITS, TOF
+  MOVE_TIMEOUT      = 300 s — MOVE / HOME (may take minutes on a 6m bed)
 """
 
 import asyncio
 import json
 import threading
+import time
 import serial
 from config import settings
+
+# ─── Timeouts ─────────────────────────────────────────────────────────────────
+
+SERIAL_READ_TIMEOUT = 1.0  # per readline() call (s) — short so deadline loop ticks fast
+COMMAND_TIMEOUT = 10.0  # max wait for OK/ERR on quick commands (s)
+MOVE_TIMEOUT = 300.0  # max wait for DONE on MOVE/HOME (s) — covers a full 6 m traverse
 
 # ─── Serial connection ────────────────────────────────────────────────────────
 
@@ -39,11 +58,9 @@ def connect():
         _ser = serial.Serial(
             port=settings.esp32_port,
             baudrate=settings.esp32_baudrate,
-            timeout=5.0,
+            timeout=SERIAL_READ_TIMEOUT,  # short timeout → deadline loop ticks every 1 s
         )
-        # Flush any boot messages from the ESP32
-        import time
-
+        # Wait for ESP32 to finish booting (DTR reset on port open), then clear buffer
         time.sleep(2.0)
         _ser.reset_input_buffer()
         print(f"[gantry] connected → {settings.esp32_port} @ {settings.esp32_baudrate}")
@@ -64,14 +81,13 @@ def disconnect():
 # ─── Low-level send/receive ───────────────────────────────────────────────────
 
 
-def _send(command: str) -> dict:
+def _send(command: str, timeout_s: float = COMMAND_TIMEOUT) -> dict:
     """
     Send a command to ESP32 and wait for OK/ERR response.
     Runs in a thread (called via run_in_executor).
-    Returns parsed JSON payload or raises RuntimeError.
+    Returns parsed JSON payload or raises RuntimeError on error or timeout.
     """
     if _ser is None or not _ser.is_open:
-        # Stub fallback — pretend it worked
         print(f"[gantry:stub] {command}")
         return {"ok": True, "stub": True}
 
@@ -80,29 +96,42 @@ def _send(command: str) -> dict:
         _ser.write((command.strip() + "\n").encode())
         print(f"[gantry] → {command}")
 
+        deadline = time.monotonic() + timeout_s
+
         while True:
+            # Deadline check — raises instead of looping forever
+            if time.monotonic() > deadline:
+                raise RuntimeError(
+                    f"timeout ({timeout_s:.0f}s) waiting for response to: {command!r}"
+                )
+
             raw = _ser.readline().decode(errors="replace").strip()
+
             if not raw:
+                # readline() timed out (SERIAL_READ_TIMEOUT) — loop and check deadline
                 continue
+
             print(f"[gantry] ← {raw}")
 
             if raw.startswith("OK "):
-                return json.loads(raw[3:])
-            elif raw.startswith("ERR "):
+                try:
+                    return json.loads(raw[3:])
+                except json.JSONDecodeError as e:
+                    raise RuntimeError(f"bad JSON in OK response: {raw!r}") from e
+
+            if raw.startswith("ERR "):
                 raise RuntimeError(f"ESP32 error: {raw[4:]}")
-            # Skip debug lines that start with [ (like "[boot]", "[CMD]")
-            # and keep reading until we get OK or ERR
+
+            # Any other line (e.g. "[CMD] EN on=1" debug echo) — skip and keep waiting
 
 
-def _send_and_wait_done(command: str) -> dict:
+def _send_and_wait_done(command: str, timeout_s: float = MOVE_TIMEOUT) -> dict:
     """
     Send a MOVE command and wait for both OK (accepted) and DONE (finished).
     Runs in a thread (called via run_in_executor).
     """
     if _ser is None or not _ser.is_open:
         print(f"[gantry:stub] {command}")
-        import time
-
         time.sleep(settings.gantry_move_delay)
         return {"ok": True, "stub": True}
 
@@ -111,12 +140,20 @@ def _send_and_wait_done(command: str) -> dict:
         _ser.write((command.strip() + "\n").encode())
         print(f"[gantry] → {command}")
 
+        deadline = time.monotonic() + timeout_s
         got_ok = False
-        # Wait for OK first, then DONE
+
         while True:
+            if time.monotonic() > deadline:
+                raise RuntimeError(
+                    f"timeout ({timeout_s:.0f}s) waiting for DONE after: {command!r}"
+                )
+
             raw = _ser.readline().decode(errors="replace").strip()
+
             if not raw:
                 continue
+
             print(f"[gantry] ← {raw}")
 
             if raw.startswith("ERR "):
@@ -127,7 +164,10 @@ def _send_and_wait_done(command: str) -> dict:
                 continue  # keep reading until DONE
 
             if got_ok and raw.startswith("DONE "):
-                return json.loads(raw[5:])
+                try:
+                    return json.loads(raw[5:])
+                except json.JSONDecodeError as e:
+                    raise RuntimeError(f"bad JSON in DONE response: {raw!r}") from e
 
 
 # ─── Public async API ─────────────────────────────────────────────────────────
@@ -139,7 +179,7 @@ def get_state() -> dict:
 
 async def _run(fn, *args):
     """Run a blocking serial call in a thread pool so asyncio stays free."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()  # get_event_loop() is deprecated in 3.10+
     return await loop.run_in_executor(None, fn, *args)
 
 
@@ -156,11 +196,12 @@ async def home(axis: str = "all") -> dict:
     """
     Home one or all axes. Blocking — waits until homing completes.
     axis: "all" | "x" | "y" | "z"
+    Uses MOVE_TIMEOUT because full homing can take several minutes.
     """
     _state["busy"] = True
     print(f"[gantry] homing axis={axis}")
     try:
-        result = await _run(_send, f"HOME axis={axis}")
+        await _run(_send, f"HOME axis={axis}", MOVE_TIMEOUT)
         _state.update({"x": 0.0, "y": 0.0, "z": 0.0, "busy": False, "homed": True})
         return get_state()
     except Exception as e:
@@ -176,9 +217,7 @@ async def move_to(x: float, y: float, z: float, speed: int = 150) -> dict:
     _state["busy"] = True
     print(f"[gantry] moving → X={x} Y={y} Z={z} speed={speed}")
     try:
-        result = await _run(
-            _send_and_wait_done, f"MOVE x={x} y={y} z={z} speed={speed}"
-        )
+        await _run(_send_and_wait_done, f"MOVE x={x} y={y} z={z} speed={speed}")
         _state.update({"x": x, "y": y, "z": z, "busy": False})
         return get_state()
     except Exception as e:
@@ -195,7 +234,7 @@ async def move_to_plant(row: int, col: int) -> dict:
     y_mm = row * 1000.0  # 2000mm / 2 rows = 1000mm spacing
     z_mm = 50.0  # working height above plant canopy
 
-    # Raise Z first before XY travel (safe move — avoid hitting plants)
+    # Raise Z to safe height first, then travel XY, then lower
     await move_to(_state["x"], _state["y"], 0.0)
     await move_to(x_mm, y_mm, z_mm)
     return get_state()
