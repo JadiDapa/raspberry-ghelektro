@@ -73,16 +73,23 @@ async def start_session(session_id: str, db: AsyncSession = Depends(get_db)):
     row = await crud.get_session(db, session_id)
     if not row:
         raise HTTPException(404, "Session not found")
+
+    # Allow restarting stopped/error sessions by resetting them first
+    if row.status in ("stopped", "error"):
+        row = await crud.reset_session(db, session_id)
+
     if row.status != "created":
         raise HTTPException(409, f"Cannot start session with status '{row.status}'")
 
-    # Guard: only one session at a time — one gantry, one serial port.
-    if _active_session_id is not None:
-        raise HTTPException(
-            409,
-            f"Another session ({_active_session_id}) is already running. "
-            "Stop it first before starting a new one.",
-        )
+    # Clear stale active guard — in case a previous session errored without cleanup
+    if _active_session_id is not None and _active_session_id != session_id:
+        stale_task = _tasks.get(_active_session_id)
+        if stale_task is None or stale_task.done():
+            _active_session_id = None  # clear stale lock
+        else:
+            raise HTTPException(
+                409, f"Another session ({_active_session_id}) is already running."
+            )
 
     _active_session_id = session_id
     event_bus.create(session_id)
@@ -178,3 +185,15 @@ async def session_events(session_id: str, db: AsyncSession = Depends(get_db)):
     return StreamingResponse(
         stream(), media_type="text/event-stream", headers=SSE_HEADERS
     )
+
+
+@router.post("/{session_id}/restart")
+async def restart_session(session_id: str, db: AsyncSession = Depends(get_db)):
+    """Reset a stopped/error session and start it again."""
+    row = await crud.get_session(db, session_id)
+    if not row:
+        raise HTTPException(404, "Session not found")
+    if row.status == "running":
+        raise HTTPException(409, "Session is already running — stop it first")
+    await crud.reset_session(db, session_id)
+    return await start_session(session_id, db)

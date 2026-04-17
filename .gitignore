@@ -19,3 +19,6 @@ static/images/
 
 # YOLO model (large binary — download separately on Pi)
 *.pt
+
+frame-selector.py
+vids/*

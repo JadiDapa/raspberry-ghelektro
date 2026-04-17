@@ -14,7 +14,9 @@ def utcnow():
 # ─── Sessions ─────────────────────────────────────────────────────────────────
 
 
-async def create_session(db: AsyncSession, session_id: str, notes: str | None) -> Session:
+async def create_session(
+    db: AsyncSession, session_id: str, notes: str | None
+) -> Session:
     row = Session(id=session_id, status="created", notes=notes, created_at=utcnow())
     db.add(row)
     await db.commit()
@@ -47,7 +49,9 @@ async def set_session_running(db: AsyncSession, session_id: str) -> Session | No
     return row
 
 
-async def complete_session(db: AsyncSession, session_id: str, summary: dict) -> Session | None:
+async def complete_session(
+    db: AsyncSession, session_id: str, summary: dict
+) -> Session | None:
     row = await get_session(db, session_id)
     if not row:
         return None
@@ -81,7 +85,7 @@ async def set_session_error(db: AsyncSession, session_id: str, message: str) -> 
 
 async def set_session_stopped(db: AsyncSession, session_id: str) -> None:
     row = await get_session(db, session_id)
-    if row and row.status == "running":
+    if row and row.status in ("running", "error"):  # ← was only "running"
         row.status = "stopped"
         row.completed_at = utcnow()
         await db.commit()
@@ -162,7 +166,9 @@ async def get_plant_scans(db: AsyncSession, session_id: str) -> list[PlantScan]:
     return list(result.scalars().all())
 
 
-async def get_plant_scan(db: AsyncSession, session_id: str, plant_id: int) -> PlantScan | None:
+async def get_plant_scan(
+    db: AsyncSession, session_id: str, plant_id: int
+) -> PlantScan | None:
     result = await db.execute(
         select(PlantScan).where(
             PlantScan.session_id == session_id,
@@ -170,3 +176,17 @@ async def get_plant_scan(db: AsyncSession, session_id: str, plant_id: int) -> Pl
         )
     )
     return result.scalar_one_or_none()
+
+
+async def reset_session(db: AsyncSession, session_id: str) -> Session | None:
+    """Reset a stopped/error session back to 'created' so it can be started again."""
+    row = await get_session(db, session_id)
+    if not row:
+        return None
+    if row.status in ("stopped", "error"):
+        row.status = "created"
+        row.started_at = None
+        row.completed_at = None
+        await db.commit()
+        await db.refresh(row)
+    return row
