@@ -374,3 +374,29 @@ async def read_tof() -> float | None:
     if mm is None:
         return None
     return round(mm / 10.0, 1)  # mm → cm
+
+
+# ─── Servo control ────────────────────────────────────────────────────────────
+
+_servo_state = {"pan": 90, "tilt": 90}
+
+
+def get_servo_state() -> dict:
+    return dict(_servo_state)
+
+
+async def get_servo_angles() -> dict:
+    """Return last-known servo angles (no serial round-trip needed)."""
+    return get_servo_state()
+
+
+async def set_servo_angles(pan: float, tilt: float) -> dict:
+    """Move servos to the given pan/tilt angles (0–180°)."""
+    pan_i  = max(0, min(180, int(round(pan))))
+    tilt_i = max(0, min(180, int(round(tilt))))
+    result = await _run(_send, f"SERVO pan={pan_i} tilt={tilt_i}")
+    _servo_state.update({
+        "pan":  result.get("pan",  pan_i),
+        "tilt": result.get("tilt", tilt_i),
+    })
+    return get_servo_state()

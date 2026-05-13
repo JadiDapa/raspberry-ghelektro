@@ -1,5 +1,4 @@
 import asyncio
-import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -231,33 +230,14 @@ async def mjpeg_stream():
 # ─── Snapshot capture (used by session scan loop) ─────────────────────────────
 
 
-async def capture_snapshot(plant_id: int, session_id: str) -> str:
+async def capture_bytes() -> bytes:
     """
-    Capture a single fresh frame and save it to disk.
-
-    Called AFTER the gantry has already stabilized (the caller waits
-    camera_stabilize_delay before calling this). We discard the current
-    buffer and wait for the very next frame so we never save a stale image
-    from while the gantry was still moving.
-
-    Returns: file path relative to project root (e.g. "static/images/abc1/plant_03.jpg")
-    Raises:  RuntimeError if camera produces no frame within 5 seconds
+    Capture a single fresh frame and return raw JPEG bytes.
+    Never writes to disk. Raises RuntimeError if no frame within 5 seconds.
     """
     loop = asyncio.get_event_loop()
-
-    # Force a fresh frame — the event was already cleared by the last write,
-    # so wait_for_frame will block until the capture thread writes the next one.
     frame = await loop.run_in_executor(_executor, _buffer.wait_for_frame, 5.0)
-
     if frame is None:
         raise RuntimeError("Camera not ready — no frame received within 5 seconds")
-
-    dir_path = os.path.join(settings.images_dir, session_id)
-    os.makedirs(dir_path, exist_ok=True)
-
-    file_path = os.path.join(dir_path, f"plant_{plant_id:02d}.jpg")
-    with open(file_path, "wb") as f:
-        f.write(frame)
-
-    print(f"[camera] snapshot saved → {file_path}")
-    return file_path
+    print("[camera] snapshot captured → in-memory bytes")
+    return frame

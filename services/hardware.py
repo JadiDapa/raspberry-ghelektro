@@ -21,20 +21,20 @@ from config import settings
 
 # ─── Camera ───────────────────────────────────────────────────────────────────
 
-async def capture_image(plant_id: int, session_id: str) -> str:
-    """Wait for gantry to stabilize, then capture a fresh frame from the webcam."""
-    from services.camera import capture_snapshot
+async def capture_image() -> bytes:
+    """Wait for gantry to stabilize, then capture a fresh frame as JPEG bytes."""
+    from services.camera import capture_bytes
     print(f"[camera] waiting {settings.camera_stabilize_delay}s for gantry to stabilize...")
     await asyncio.sleep(settings.camera_stabilize_delay)
-    return await capture_snapshot(plant_id, session_id)
+    return await capture_bytes()
 
 
 # ─── YOLO ─────────────────────────────────────────────────────────────────────
 
-async def run_yolo(image_path: str) -> list[dict]:
-    """Run YOLOv11 inference. Returns detections per class."""
-    from services.yolo_service import run_inference
-    return await run_inference(image_path)
+async def run_yolo(image_bytes: bytes) -> list[dict]:
+    """Run YOLOv11 inference on JPEG bytes. Returns detections per class."""
+    from services.yolo_service import run_inference_from_bytes
+    return await run_inference_from_bytes(image_bytes)
 
 
 # ─── Per-plant sensors ────────────────────────────────────────────────────────

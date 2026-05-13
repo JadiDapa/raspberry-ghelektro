@@ -42,30 +42,28 @@ def load_model():
         _model = None
 
 
-def _predict(image_path: str) -> list[dict]:
-    """
-    Blocking inference — runs in the thread executor.
-    Returns: [{"cls": "ripe", "count": 3, "confidence": 0.91}, ...]
-    One dict per class that was detected (classes with 0 detections are omitted).
-    """
+def _stub_detections() -> list[dict]:
+    import random
+    return [
+        {"cls": "ripe",    "count": random.randint(0, 6), "confidence": round(random.uniform(0.80, 0.97), 2)},
+        {"cls": "unripe",  "count": random.randint(0, 5), "confidence": round(random.uniform(0.75, 0.95), 2)},
+        {"cls": "turning", "count": random.randint(0, 3), "confidence": round(random.uniform(0.70, 0.93), 2)},
+        {"cls": "broken",  "count": random.randint(0, 2), "confidence": round(random.uniform(0.65, 0.90), 2)},
+    ]
+
+
+def _predict_array(arr) -> list[dict]:
+    """Run inference on a numpy BGR array. Returns detections per class."""
     if _model is None:
-        # Stub fallback if model failed to load
-        import random
-        return [
-            {"cls": "ripe",    "count": random.randint(0, 6), "confidence": round(random.uniform(0.80, 0.97), 2)},
-            {"cls": "unripe",  "count": random.randint(0, 5), "confidence": round(random.uniform(0.75, 0.95), 2)},
-            {"cls": "turning", "count": random.randint(0, 3), "confidence": round(random.uniform(0.70, 0.93), 2)},
-            {"cls": "broken",  "count": random.randint(0, 2), "confidence": round(random.uniform(0.65, 0.90), 2)},
-        ]
+        return _stub_detections()
 
     results = _model.predict(
-        source=image_path,
+        source=arr,
         imgsz=settings.yolo_imgsz,
         conf=settings.yolo_confidence,
         verbose=False,
     )
 
-    # Count detections per class
     counts: dict[str, int] = {cls: 0 for cls in FRUIT_CLASSES}
     best_conf: dict[str, float] = {cls: 0.0 for cls in FRUIT_CLASSES}
 
@@ -79,18 +77,23 @@ def _predict(image_path: str) -> list[dict]:
                 if conf > best_conf[cls_name]:
                     best_conf[cls_name] = conf
 
-    # Return only classes that had at least one detection
     detections = [
         {"cls": cls, "count": counts[cls], "confidence": round(best_conf[cls], 2)}
         for cls in FRUIT_CLASSES
         if counts[cls] > 0
     ]
-
     print(f"[yolo] detections: {detections}")
     return detections
 
 
-async def run_inference(image_path: str) -> list[dict]:
+def _predict_from_bytes(image_bytes: bytes) -> list[dict]:
+    import cv2
+    import numpy as np
+    arr = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
+    return _predict_array(arr)
+
+
+async def run_inference_from_bytes(image_bytes: bytes) -> list[dict]:
     """Async wrapper — offloads blocking inference to thread pool."""
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(_executor, _predict, image_path)
+    return await loop.run_in_executor(_executor, _predict_from_bytes, image_bytes)

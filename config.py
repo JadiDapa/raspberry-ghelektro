@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     sensor_read_delay: float = 0.3
     gantry_move_delay: float = 2.0  # ← add this
 
+    # ─── Dashboard sync ─────────────────────────────────────────────────
+    dashboard_url: str = ""                      # e.g. http://192.168.1.10:3000
+    rpi_base_url: str = "http://localhost:8000"  # used to build absolute image URLs
+    bed_id: str = "1"                            # Next.js Bed.id this RPi manages
+
 
 settings = Settings()
 
