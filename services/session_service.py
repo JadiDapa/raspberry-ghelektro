@@ -7,7 +7,7 @@ No local SQLite. No db session. Exceptions propagate and stop the session.
 import asyncio
 from datetime import datetime, timezone
 
-from config import settings, PLANT_GRID
+from models.scan_config import ScanConfig
 from services import event_bus, hardware
 from services import gantry as gantry_service
 from services import pi_client
@@ -15,14 +15,18 @@ from services.session_logger import SessionLogger
 from services.soil_service import col_to_sensor
 
 
-async def run_session(session_id: int) -> None:
+async def run_session(session_id: int, config: ScanConfig | None = None) -> None:
+    if config is None:
+        config = ScanConfig()
+
     log = SessionLogger(str(session_id))
+    plant_grid = config.plant_grid()
     plant_results = []
 
     try:
         # ── Session start ──────────────────────────────────────────────
         await pi_client.patch_status(session_id, "running")
-        log.log_session_start(total_plants=len(PLANT_GRID))
+        log.log_session_start(total_plants=len(plant_grid))
         log.info(f"log file  path={log.path}", tag="SESSION")
 
         await event_bus.emit(
@@ -31,7 +35,7 @@ async def run_session(session_id: int) -> None:
                 "type": "session_started",
                 "session_id": str(session_id),
                 "timestamp": datetime.now(timezone.utc).isoformat(),
-                "total_plants": len(PLANT_GRID),
+                "total_plants": len(plant_grid),
             },
         )
         await asyncio.sleep(0.1)
@@ -74,12 +78,15 @@ async def run_session(session_id: int) -> None:
         log.log_pump_on()
 
         # ── Plant scan loop ───────────────────────────────────────────
-        for plant_id, (row, col) in enumerate(PLANT_GRID, start=1):
-            log.log_plant_start(plant_id, len(PLANT_GRID), row, col)
+        for plant_id, (row, col) in enumerate(plant_grid, start=1):
+            log.log_plant_start(plant_id, len(plant_grid), row, col)
 
             # — Gantry move —
             log.log_gantry_move_start(plant_id, row, col)
-            await gantry_service.move_to_plant(row, col)
+            await gantry_service.move_to_plant_with_config(row, col, config)
+            await gantry_service.set_servo_angles(
+                config.offset.servo_pan, config.offset.servo_tilt
+            )
             state = gantry_service.get_state()
             log.log_gantry_move_done(state["x"], state["y"], state["z"])
             await event_bus.emit(

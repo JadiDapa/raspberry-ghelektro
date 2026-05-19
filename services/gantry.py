@@ -29,6 +29,7 @@ import threading
 import time
 import serial
 from config import settings
+from models.scan_config import ScanConfig
 
 # ─── Timeouts ─────────────────────────────────────────────────────────────────
 
@@ -261,28 +262,26 @@ async def move_to(x: float, y: float, z: float, speed: int = 150) -> dict:
 
 
 async def move_to_plant(row: int, col: int) -> dict:
+    """Move above a plant grid position using hardcoded defaults."""
+    return await move_to_plant_with_config(row, col, ScanConfig())
+
+
+async def move_to_plant_with_config(row: int, col: int, config) -> dict:
     """
-    Move above a plant grid position.
-    Safe sequence: raise Z to clearance height, travel XY, then lower to working height.
+    Move above a plant grid position using values from a ScanConfig.
 
     Z axis convention (matches ESP32 firmware):
       Z=0   → home / top of travel (limit switch end)
-      Z=50  → 50mm below home = working height above canopy
-
-    FIX: was raising Z to 0.0 first (already home after homing → "already at target"
-    → _send_and_wait_done hung). Now moves XY and Z together in one command,
-    preceded by a Z-raise only if we're already below clearance.
+      Z>0   → mm below home (working depth)
     """
-    x_mm = col * 750.0  # 6000mm / 8 cols = 750mm spacing
-    y_mm = row * 1000.0  # 2000mm / 2 rows = 1000mm spacing
-    z_working = 50.0  # working height (mm below home)
-    z_clear = 10.0  # safe Z clearance for XY travel (closer to home = safer)
+    x_mm, y_mm = config.plant_position_mm(row, col)
+    z_working = config.offset.z_mm
+    z_clear = 10.0
 
-    # Step 1: if Z is below clearance, raise it first to avoid hitting plants while moving XY
+    # Raise to clearance first to avoid clipping plants while travelling XY
     if _state["z"] > z_clear:
         await move_to(_state["x"], _state["y"], z_clear)
 
-    # Step 2: travel XY at clearance height, then lower to working height in one move
     await move_to(x_mm, y_mm, z_working)
     return get_state()
 

@@ -8,10 +8,6 @@ class Settings(BaseSettings):
         extra="ignore",  # 🔥 prevents crash from leftover env vars
     )
 
-    # ─── Grid ──────────────────────────────────────────────────────────
-    grid_rows: int = 2
-    grid_cols: int = 8
-
     # ─── Paths ─────────────────────────────────────────────────────────
     images_dir: str = "static/images"
     yolo_model_path: str = "yolo11n.pt"
@@ -54,7 +50,3 @@ settings = Settings()
 # ─── Constants ─────────────────────────────────────────────────────────
 
 FRUIT_CLASSES = ["unripe", "turning", "ripe", "broken"]
-
-PLANT_GRID = [
-    (row, col) for row in range(settings.grid_rows) for col in range(settings.grid_cols)
-]

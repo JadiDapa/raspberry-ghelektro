@@ -1,12 +1,19 @@
 import asyncio
 import json
+from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Body, HTTPException
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
+from models.scan_config import ScanConfig as ScanConfigModel
 from services import event_bus, session_service
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
+
+
+class StartSessionBody(BaseModel):
+    scan_config: Optional[ScanConfigModel] = None
 
 # Registry of running asyncio tasks, keyed by session_id string.
 # Needed so stop_session can cancel the scan loop.
@@ -26,7 +33,10 @@ SSE_HEADERS = {
 
 
 @router.post("/{session_id}/start")
-async def start_session(session_id: str):
+async def start_session(
+    session_id: str,
+    body: StartSessionBody = Body(default=StartSessionBody()),
+):
     global _active_session_id
 
     if _active_session_id is not None and _active_session_id != session_id:
@@ -38,9 +48,11 @@ async def start_session(session_id: str):
                 409, f"Another session ({_active_session_id}) is already running."
             )
 
+    config = body.scan_config if body.scan_config is not None else ScanConfigModel()
+
     _active_session_id = session_id
     event_bus.create(session_id)
-    task = asyncio.create_task(session_service.run_session(int(session_id)))
+    task = asyncio.create_task(session_service.run_session(int(session_id), config))
     _tasks[session_id] = task
 
     def _on_done(t: asyncio.Task) -> None:
