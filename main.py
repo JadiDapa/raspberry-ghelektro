@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from routers import sessions, camera, gantry, info, logs, servo
+from routers import sessions, camera, gantry, info, logs, servo, sensors
 from services import camera as camera_service
 from services import gantry as gantry_service
 from services import yolo_service
@@ -43,6 +43,7 @@ app.include_router(sessions.router)
 app.include_router(camera.router)
 app.include_router(gantry.router)
 app.include_router(servo.router)
+app.include_router(sensors.router)
 app.include_router(info.router)
 app.include_router(logs.router)
 

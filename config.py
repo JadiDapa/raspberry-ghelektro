@@ -37,12 +37,20 @@ class Settings(BaseSettings):
 
     # ─── Timing stubs ──────────────────────────────────────────────────
     sensor_read_delay: float = 0.3
-    gantry_move_delay: float = 2.0  # ← add this
+    gantry_move_delay: float = 2.0
+    stub_gantry_delay: float = 0.05  # fake move delay used when stub_mode=true
 
     # ─── Dashboard sync ─────────────────────────────────────────────────
     dashboard_url: str = ""                      # e.g. http://192.168.1.10:3000
     rpi_base_url: str = "http://localhost:8000"  # used to build absolute image URLs
     bed_id: str = "1"                            # Next.js Bed.id this RPi manages
+
+    # ─── Dev / debug ────────────────────────────────────────────────────
+    # Set STUB_MODE=true to run the full session pipeline without any hardware.
+    # All serial/camera calls already fall back to stubs when hardware is absent;
+    # this flag additionally bypasses dashboard HTTP calls so sessions complete
+    # end-to-end without a running Next.js instance.
+    stub_mode: bool = False
 
 
 settings = Settings()

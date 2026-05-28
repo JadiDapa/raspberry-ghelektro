@@ -147,7 +147,7 @@ def _send_and_wait_done(command: str, timeout_s: float = MOVE_TIMEOUT) -> dict:
     """
     if _ser is None or not _ser.is_open:
         print(f"[gantry:stub] {command}")
-        time.sleep(settings.gantry_move_delay)
+        time.sleep(settings.stub_gantry_delay if settings.stub_mode else settings.gantry_move_delay)
         return {"ok": True, "stub": True}
 
     with _lock:
