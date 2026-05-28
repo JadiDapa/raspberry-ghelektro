@@ -12,7 +12,6 @@ from services import event_bus, hardware
 from services import gantry as gantry_service
 from services import pi_client
 from services.session_logger import SessionLogger
-from services.soil_service import col_to_sensor
 
 
 async def run_session(session_id: int, config: ScanConfig | None = None) -> None:
@@ -73,10 +72,6 @@ async def run_session(session_id: int, config: ScanConfig | None = None) -> None
             },
         )
 
-        log.step("PUMP", "turning water pump ON")
-        await gantry_service.set_relay("dc", on=True)
-        log.log_pump_on()
-
         # ── Plant scan loop ───────────────────────────────────────────
         for plant_id, (row, col) in enumerate(plant_grid, start=1):
             log.log_plant_start(plant_id, len(plant_grid), row, col)
@@ -131,58 +126,12 @@ async def run_session(session_id: int, config: ScanConfig | None = None) -> None
                 },
             )
 
-            # — TOF height sensor —
-            log.log_tof_start()
-            height_cm = await hardware.read_tof_distance()
-            log.log_tof_done(height_cm)
-
-            # — Soil moisture sensor —
-            sensor_idx = col_to_sensor(col)
-            log.log_moisture_start(col, sensor_idx)
-            moisture_pct = await hardware.read_soil_moisture(col)
-            log.log_moisture_done(moisture_pct, col)
-            await event_bus.emit(
-                str(session_id),
-                {
-                    "type": "sensor_read",
-                    "session_id": str(session_id),
-                    "plant_id": plant_id,
-                    "height_cm": height_cm,
-                    "moisture_pct": moisture_pct,
-                },
-            )
-
-            # — Watering decision —
-            valve_duration, reason = hardware.compute_watering_duration(moisture_pct)
-            log.log_watering_decision(moisture_pct, valve_duration, reason)
-            if valve_duration > 0:
-                await hardware.open_valve(valve_duration)
-                log.log_valve_done(valve_duration)
-
-            # — Write sensor + watering data to Next.js —
-            await pi_client.post_sensors(
-                session_id, plant_id, height_cm, moisture_pct, valve_duration, reason
-            )
-            await event_bus.emit(
-                str(session_id),
-                {
-                    "type": "plant_watered",
-                    "session_id": str(session_id),
-                    "plant_id": plant_id,
-                    "valve_duration_sec": valve_duration,
-                    "reason": reason,
-                },
-            )
-
             plant_results.append(
                 {
                     "plant_id": plant_id,
                     "row": row,
                     "col": col,
                     "detections": detections,
-                    "height_cm": height_cm,
-                    "moisture_pct": moisture_pct,
-                    "valve_duration_sec": valve_duration,
                 }
             )
             log.log_plant_done(plant_id)
@@ -200,10 +149,6 @@ async def run_session(session_id: int, config: ScanConfig | None = None) -> None
             },
         )
 
-        log.step("PUMP", "turning water pump OFF")
-        await gantry_service.set_relay("dc", on=False)
-        log.log_pump_off(reason="session complete")
-
         log.step("MOTORS", "disabling stepper drivers")
         await gantry_service.disable_motors()
         log.log_motors_disabled()
@@ -211,11 +156,6 @@ async def run_session(session_id: int, config: ScanConfig | None = None) -> None
 
     except asyncio.CancelledError:
         log.warn("SESSION", "CancelledError received — stopping cleanly")
-        try:
-            await gantry_service.set_relay("dc", on=False)
-            log.log_pump_off(reason="cancelled")
-        except Exception as e:
-            log.warn("SESSION", f"cleanup: could not turn off pump — {e}")
         try:
             await gantry_service.disable_motors()
             log.log_motors_disabled()
@@ -234,11 +174,6 @@ async def run_session(session_id: int, config: ScanConfig | None = None) -> None
 
     except Exception as e:
         log.error("SESSION", f"unhandled exception: {e}")
-        try:
-            await gantry_service.set_relay("dc", on=False)
-            log.log_pump_off(reason="error")
-        except Exception as ce:
-            log.warn("SESSION", f"cleanup: could not turn off pump — {ce}")
         try:
             await gantry_service.disable_motors()
             log.log_motors_disabled()
@@ -265,9 +200,6 @@ def _build_summary(plant_results: list[dict]) -> dict:
     if not plant_results:
         return {}
 
-    heights = [p["height_cm"] for p in plant_results]
-    moisture = [p["moisture_pct"] for p in plant_results]
-
     ripeness = {"ripe": 0, "turning": 0, "unripe": 0, "broken": 0}
     for p in plant_results:
         for d in p["detections"]:
@@ -282,9 +214,6 @@ def _build_summary(plant_results: list[dict]) -> dict:
 
     return {
         "totalPlants": len(plant_results),
-        "avgHeightCm": round(sum(heights) / len(heights), 1),
-        "avgMoisturePct": round(sum(moisture) / len(moisture), 1),
         "ripeness": ripeness,
         "harvestReadyIds": harvest_ready_ids,
-        "totalWaterSec": round(sum(p["valve_duration_sec"] for p in plant_results), 1),
     }

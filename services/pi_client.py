@@ -105,3 +105,36 @@ async def post_error(session_id: int) -> None:
             json={},
         )
         r.raise_for_status()
+
+
+async def post_watering_stop(
+    session_id: int,
+    stop_index: int,
+    x_mm: float,
+    y_mm: float,
+    max_height_cm: float | None,
+    valve_duration_sec: float,
+) -> None:
+    """POST /sessions/{id}/watering-stops — record one column watering stop."""
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        r = await client.post(
+            f"{_base()}/api/sessions/{session_id}/watering-stops",
+            json={
+                "stopIndex": stop_index,
+                "xMm": x_mm,
+                "yMm": y_mm,
+                "maxHeightCm": max_height_cm,
+                "valveDurationSec": valve_duration_sec,
+            },
+        )
+        r.raise_for_status()
+
+
+async def post_watering_complete(session_id: int, summary: dict) -> None:
+    """POST /sessions/{id}/complete — finalize watering session with summary."""
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        r = await client.post(
+            f"{_base()}/api/sessions/{session_id}/complete",
+            json={"summary": summary},
+        )
+        r.raise_for_status()

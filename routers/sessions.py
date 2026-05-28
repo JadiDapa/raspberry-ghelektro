@@ -7,13 +7,16 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from models.scan_config import ScanConfig as ScanConfigModel
-from services import event_bus, session_service
+from models.watering_config import WateringConfig as WateringConfigModel
+from services import event_bus, session_service, watering_session_service
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
 
 class StartSessionBody(BaseModel):
+    session_type: str = "SCAN"  # "SCAN" | "WATERING"
     scan_config: Optional[ScanConfigModel] = None
+    watering_config: Optional[WateringConfigModel] = None
 
 # Registry of running asyncio tasks, keyed by session_id string.
 # Needed so stop_session can cancel the scan loop.
@@ -48,11 +51,20 @@ async def start_session(
                 409, f"Another session ({_active_session_id}) is already running."
             )
 
-    config = body.scan_config if body.scan_config is not None else ScanConfigModel()
-
     _active_session_id = session_id
     event_bus.create(session_id)
-    task = asyncio.create_task(session_service.run_session(int(session_id), config))
+
+    if body.session_type == "WATERING":
+        wconfig = body.watering_config if body.watering_config is not None else WateringConfigModel()
+        task = asyncio.create_task(
+            watering_session_service.run_watering_session(int(session_id), wconfig)
+        )
+    else:
+        sconfig = body.scan_config if body.scan_config is not None else ScanConfigModel()
+        task = asyncio.create_task(
+            session_service.run_session(int(session_id), sconfig)
+        )
+
     _tasks[session_id] = task
 
     def _on_done(t: asyncio.Task) -> None:

@@ -63,6 +63,17 @@ async def read_soil_moisture(col: int = 0) -> float:
     return moisture_pct
 
 
+async def read_all_soil_sensors() -> dict:
+    """Read all 3 soil sensors at once. Returns {"s0": float, "s1": float, "s2": float}."""
+    from services.soil_service import read_all_sensors
+    result = await read_all_sensors()
+    s0 = float(result.get("s0", result.get("pct_0", 0.0)))
+    s1 = float(result.get("s1", result.get("pct_1", 0.0)))
+    s2 = float(result.get("s2", result.get("pct_2", 0.0)))
+    print(f"[moisture] all sensors: s0={s0}% s1={s1}% s2={s2}%")
+    return {"s0": s0, "s1": s1, "s2": s2}
+
+
 # ─── Valve ────────────────────────────────────────────────────────────────────
 
 async def open_valve(duration_sec: float) -> None:
