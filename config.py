@@ -10,7 +10,7 @@ class Settings(BaseSettings):
 
     # ─── Paths ─────────────────────────────────────────────────────────
     images_dir: str = "static/images"
-    yolo_model_path: str = "yolo11n.pt"
+    yolo_model_path: str = "best.pt"
 
     # ─── ESP32 #1 — Motion (USB serial) ────────────────────────────────
     esp32_port: str = "/dev/ttyUSB0"
@@ -41,9 +41,9 @@ class Settings(BaseSettings):
     stub_gantry_delay: float = 0.05  # fake move delay used when stub_mode=true
 
     # ─── Dashboard sync ─────────────────────────────────────────────────
-    dashboard_url: str = ""                      # e.g. http://192.168.1.10:3000
+    dashboard_url: str = ""  # e.g. http://192.168.1.10:3000
     rpi_base_url: str = "http://localhost:8000"  # used to build absolute image URLs
-    bed_id: str = "1"                            # Next.js Bed.id this RPi manages
+    bed_id: str = "1"  # Next.js Bed.id this RPi manages
 
     # ─── Dev / debug ────────────────────────────────────────────────────
     # Set STUB_MODE=true to run the full session pipeline without any hardware.

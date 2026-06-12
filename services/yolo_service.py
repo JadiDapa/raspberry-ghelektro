@@ -11,7 +11,7 @@ Pi CPU note:
   the gantry is stationary while we scan each plant anyway.
 
   If you need it faster later, export to NCNN format:
-    yolo export model=yolo11n.pt format=ncnn
+    yolo export model=best.pt format=ncnn
   Then set yolo_model_path = "yolo11n_ncnn_model" in .env
 """
 
@@ -30,11 +30,18 @@ def load_model():
     global _model
     try:
         from ultralytics import YOLO
+
         _model = YOLO(settings.yolo_model_path)
         # Warm up — run a blank inference so the first real scan isn't slow
         import numpy as np
+
         dummy = np.zeros((settings.yolo_imgsz, settings.yolo_imgsz, 3), dtype="uint8")
-        _model.predict(dummy, imgsz=settings.yolo_imgsz, conf=settings.yolo_confidence, verbose=False)
+        _model.predict(
+            dummy,
+            imgsz=settings.yolo_imgsz,
+            conf=settings.yolo_confidence,
+            verbose=False,
+        )
         print(f"[yolo] model loaded and warmed up → {settings.yolo_model_path}")
     except Exception as e:
         print(f"[yolo] WARNING: could not load model — {e}")
@@ -44,11 +51,28 @@ def load_model():
 
 def _stub_detections() -> list[dict]:
     import random
+
     return [
-        {"cls": "ripe",    "count": random.randint(0, 6), "confidence": round(random.uniform(0.80, 0.97), 2)},
-        {"cls": "unripe",  "count": random.randint(0, 5), "confidence": round(random.uniform(0.75, 0.95), 2)},
-        {"cls": "turning", "count": random.randint(0, 3), "confidence": round(random.uniform(0.70, 0.93), 2)},
-        {"cls": "broken",  "count": random.randint(0, 2), "confidence": round(random.uniform(0.65, 0.90), 2)},
+        {
+            "cls": "ripe",
+            "count": random.randint(0, 6),
+            "confidence": round(random.uniform(0.80, 0.97), 2),
+        },
+        {
+            "cls": "unripe",
+            "count": random.randint(0, 5),
+            "confidence": round(random.uniform(0.75, 0.95), 2),
+        },
+        {
+            "cls": "turning",
+            "count": random.randint(0, 3),
+            "confidence": round(random.uniform(0.70, 0.93), 2),
+        },
+        {
+            "cls": "broken",
+            "count": random.randint(0, 2),
+            "confidence": round(random.uniform(0.65, 0.90), 2),
+        },
     ]
 
 
@@ -89,6 +113,7 @@ def _predict_array(arr) -> list[dict]:
 def _predict_from_bytes(image_bytes: bytes) -> list[dict]:
     import cv2
     import numpy as np
+
     arr = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
     return _predict_array(arr)
 

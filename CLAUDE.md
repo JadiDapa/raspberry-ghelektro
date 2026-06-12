@@ -137,10 +137,10 @@ Add a retry endpoint `POST /sessions/{id}/sync` so Next.js can pull on demand.
 ESP32_PORT=/dev/ttyUSB0
 SOIL_UART_PORT=/dev/ttyAMA0
 CAMERA_INDEX=0
-YOLO_MODEL_PATH=yolo11n.pt   # prefer NCNN over .pt for speed
+YOLO_MODEL_PATH=best.pt   # prefer NCNN over .pt for speed
 YOLO_CONFIDENCE=0.4
 CAMERA_STABILIZE_DELAY=1.0
 DASHBOARD_URL=http://<nextjs-ip>:3000  # Next.js app URL for sync POST
 ```
 
-YOLO model is excluded from git — download `yolo11n.pt` separately or export to NCNN format.
+YOLO model is excluded from git — download `best.pt` separately or export to NCNN format.

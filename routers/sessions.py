@@ -25,6 +25,11 @@ _tasks: dict[str, asyncio.Task] = {}
 # Global guard — only one session may run at a time.
 _active_session_id: str | None = None
 
+def is_active() -> bool:
+    """Returns True if a session is currently running."""
+    return _active_session_id is not None
+
+
 SSE_HEADERS = {
     "Cache-Control": "no-cache",
     "X-Accel-Buffering": "no",
