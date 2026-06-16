@@ -14,7 +14,6 @@ ESP32 that talks directly to the dashboard — not through the Pi.
 """
 
 import asyncio
-import random
 
 from config import settings
 
@@ -43,10 +42,17 @@ async def read_tof_distance() -> float:
     """Read plant height from VL53L1X TOF sensor on ESP32 #1. Returns cm."""
     from services import gantry
     print("[tof] reading distance sensor via ESP32 #1...")
-    height_cm = await gantry.read_tof()
+    try:
+        height_cm = await gantry.read_tof()
+    except Exception as e:
+        # ESP32 replies "ERR TOF sensor not ready" when the VL53L0X is missing
+        # at boot — read_tof() raises instead of returning None, so catch it here
+        # too, otherwise the scan crashes instead of falling back.
+        print(f"[tof] sensor read failed ({e}) — using stub fallback")
+        height_cm = None
     if height_cm is None:
         print("[tof] sensor had no data — using stub fallback")
-        height_cm = round(random.uniform(20.0, 65.0), 1)
+        height_cm = 100.0  # stub: ~1 m tall plant
     print(f"[tof] plant height: {height_cm} cm")
     return height_cm
 

@@ -75,10 +75,8 @@ def disconnect():
 def _send(command: str, timeout_s: float = 10.0) -> dict:
     """Send a command and wait for OK/ERR. Runs in a thread."""
     if _ser is None or not _ser.is_open:
-        import random
-
         print(f"[soil:stub] {command}")
-        return {"stub": True, "pct": round(random.uniform(30.0, 80.0), 1)}
+        return {"stub": True, "pct": 0.0}  # lowest moisture → max valve duration
 
     import time
 

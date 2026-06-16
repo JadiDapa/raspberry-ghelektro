@@ -14,8 +14,8 @@ class ScanConfig(BaseModel):
     rows: int = 2
     gap_x_mm: float = 750.0
     gap_y_mm: float = 1000.0
-    padding_x_mm: float = 0.0
-    padding_y_mm: float = 0.0
+    start_x_mm: float = 0.0
+    start_y_mm: float = 0.0
     capture_offsets: list[CaptureOffset] = Field(
         default_factory=lambda: [CaptureOffset()],
         min_length=1,
@@ -30,9 +30,13 @@ class ScanConfig(BaseModel):
         ]
 
     def plant_position_mm(self, row: int, col: int) -> tuple[float, float]:
-        """Return absolute (x_mm, y_mm) for a given grid position."""
-        x = self.padding_x_mm + col * self.gap_x_mm
-        y = self.padding_y_mm + row * self.gap_y_mm
+        """Return absolute (x_mm, y_mm) for a given grid position.
+
+        The first plant (row 0, col 0) sits at (start_x_mm, start_y_mm); every
+        other plant is stepped from there by the per-axis gap.
+        """
+        x = self.start_x_mm + col * self.gap_x_mm
+        y = self.start_y_mm + row * self.gap_y_mm
         return x, y
 
     @property
