@@ -1,9 +1,27 @@
-fastapi>=0.110.0
-httpx>=0.27.0
-uvicorn[standard]>=0.29.0
-pydantic>=2.0.0
-pydantic-settings>=2.0.0
-opencv-python-headless>=4.9.0
-numpy>=1.26.0
-pyserial>=3.5
-ultralytics>=8.2.0
+# Raspberry Pi 4 (ARM64 / aarch64, Raspberry Pi OS Bookworm, Python 3.11)
+# Install in a venv. NCNN/ONNX inference is preferred over .pt on the Pi — see CLAUDE.md.
+
+# --- Web framework / server ---
+fastapi>=0.110.0,<0.116.0
+uvicorn[standard]>=0.29.0,<0.31.0
+httpx>=0.27.0,<0.28.0
+pydantic>=2.6.0,<3.0.0
+pydantic-settings>=2.2.0,<3.0.0
+
+# --- Vision / numerics ---
+# Keep numpy <2 for broad ARM wheel + ultralytics/torch compatibility on the Pi.
+numpy>=1.26.0,<2.0.0
+opencv-python-headless>=4.9.0,<4.11.0   # headless: no GUI libs needed on the Pi
+
+# --- Hardware serial (ESP32 #1 and #2) ---
+pyserial>=3.5,<4.0
+
+# --- YOLO inference ---
+# ultralytics pulls in torch/torchvision; CPU aarch64 wheels exist on PyPI for the Pi 4.
+ultralytics>=8.2.0,<8.4.0
+
+# Inference backends (export best.pt to ONNX or NCNN for faster CPU inference on the Pi):
+#   yolo export model=best.pt format=ncnn      # fastest on RPi 4 CPU
+#   yolo export model=best.pt format=onnx
+onnxruntime>=1.17.0,<1.19.0
+ncnn>=1.0.20240410
