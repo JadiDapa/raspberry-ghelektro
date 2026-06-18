@@ -32,14 +32,17 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-_default_origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
-_extra_origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+# The dashboard sends no cookies/credentials to the Pi (see dashboard/lib/pi.ts),
+# so we don't need allow_credentials. With credentials off, a wildcard origin is
+# valid and lets the dashboard reach the Pi from any host — public IP, Tailscale
+# IP, localhost, Vercel preview — without maintaining an allow list.
+# Optionally lock this down by setting CORS_ORIGINS in .env (comma-separated).
+_explicit_origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_default_origins + _extra_origins,
-    allow_origin_regex=r"https://.*\.vercel\.app",
-    allow_credentials=True,
+    allow_origins=_explicit_origins or ["*"],
+    allow_credentials=bool(_explicit_origins),
     allow_methods=["*"],
     allow_headers=["*"],
 )
