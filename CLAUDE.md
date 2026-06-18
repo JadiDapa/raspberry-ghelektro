@@ -72,7 +72,7 @@ Scan loop calls `event_bus.emit()`, SSE endpoint drains it.
 Bus is created at session start, destroyed ~2s after session end.
 
 **SSE event types emitted:**
-`session_started` | `motors_homed` | `gantry_moved` | `plant_scanned` |
+`session_started` | `motors_homed` | `gantry_moving` | `gantry_moved` | `plant_scanned` |
 `sensor_read` | `plant_watered` | `session_complete` | `session_error` | `session_reconnect`
 
 Do not add a WebSocket alternative. Do not proxy SSE through Next.js.

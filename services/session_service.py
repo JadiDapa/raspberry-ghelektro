@@ -78,6 +78,16 @@ async def run_session(session_id: int, config: ScanConfig | None = None) -> None
 
             # — Gantry move —
             log.log_gantry_move_start(plant_id, row, col)
+            await event_bus.emit(
+                str(session_id),
+                {
+                    "type": "gantry_moving",
+                    "session_id": str(session_id),
+                    "plant_id": plant_id,
+                    "row": row,
+                    "col": col,
+                },
+            )
             await gantry_service.move_to_plant_with_config(row, col, config)
             await gantry_service.set_servo_angles(
                 config.offset.servo_pan, config.offset.servo_tilt
