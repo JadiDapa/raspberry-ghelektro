@@ -40,6 +40,12 @@ class Settings(BaseSettings):
     gantry_move_delay: float = 2.0
     stub_gantry_delay: float = 0.05  # fake move delay used when stub_mode=true
 
+    # ─── CORS ───────────────────────────────────────────────────────────
+    # Comma-separated list of allowed browser origins (exact match), e.g.
+    #   CORS_ORIGINS=https://dashboard.example.com,http://203.0.113.5:3000
+    # localhost is always allowed for dev. Vercel previews are matched by regex.
+    cors_origins: str = ""
+
     # ─── Dashboard sync ─────────────────────────────────────────────────
     dashboard_url: str = ""  # e.g. http://192.168.1.10:3000
     rpi_base_url: str = "http://localhost:8000"  # used to build absolute image URLs
