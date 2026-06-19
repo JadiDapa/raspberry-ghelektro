@@ -256,6 +256,15 @@ async def run_watering_session(
             },
         )
 
+        # ── Home before parking ───────────────────────────────────────
+        # Return the gantry to a known safe position after a successful run.
+        # Best-effort: a homing hiccup must not flip a completed run to error.
+        log.step("GANTRY", "homing gantry after successful watering")
+        try:
+            await gantry_service.home()
+        except Exception as e:
+            log.warn("SESSION", f"home after complete failed — {e}")
+
         log.step("MOTORS", "disabling stepper drivers")
         await gantry_service.disable_motors()
         log.log_motors_disabled()
