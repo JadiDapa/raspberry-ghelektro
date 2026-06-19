@@ -1,25 +1,53 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+# Gantry working envelope (mm). Matches the MoveRequest bounds in routers/gantry.py
+# and stays inside the firmware homing travel. A config that would command the
+# gantry outside this box is rejected before any motion starts.
+X_MAX_MM = 6000.0
+Y_MAX_MM = 2000.0
+Z_MAX_MM = 800.0
 
 
 class CaptureOffset(BaseModel):
-    z_mm: float = 50.0
-    x_offset_mm: float = 0.0
-    y_offset_mm: float = 0.0
-    servo_pan: float = 90.0
-    servo_tilt: float = 90.0
+    z_mm: float = Field(default=50.0, ge=0.0, le=Z_MAX_MM)
+    x_offset_mm: float = Field(default=0.0, ge=-500.0, le=500.0)
+    y_offset_mm: float = Field(default=0.0, ge=-500.0, le=500.0)
+    servo_pan: float = Field(default=90.0, ge=0.0, le=180.0)
+    servo_tilt: float = Field(default=90.0, ge=0.0, le=180.0)
 
 
 class ScanConfig(BaseModel):
-    cols: int = 8
-    rows: int = 2
-    gap_x_mm: float = 750.0
-    gap_y_mm: float = 1000.0
-    start_x_mm: float = 0.0
-    start_y_mm: float = 0.0
+    cols: int = Field(default=8, ge=1, le=16)
+    rows: int = Field(default=2, ge=1, le=8)
+    gap_x_mm: float = Field(default=750.0, ge=0.0, le=X_MAX_MM)
+    gap_y_mm: float = Field(default=1000.0, ge=0.0, le=Y_MAX_MM)
+    start_x_mm: float = Field(default=0.0, ge=0.0, le=X_MAX_MM)
+    start_y_mm: float = Field(default=0.0, ge=0.0, le=Y_MAX_MM)
     capture_offsets: list[CaptureOffset] = Field(
         default_factory=lambda: [CaptureOffset()],
         min_length=1,
     )
+
+    @model_validator(mode="after")
+    def _within_travel(self) -> "ScanConfig":
+        """Reject grids whose extreme position (incl. offsets) exits the envelope."""
+        far_x = self.start_x_mm + (self.cols - 1) * self.gap_x_mm
+        far_y = self.start_y_mm + (self.rows - 1) * self.gap_y_mm
+        x_offsets = [o.x_offset_mm for o in self.capture_offsets]
+        y_offsets = [o.y_offset_mm for o in self.capture_offsets]
+        lo_x = self.start_x_mm + min(x_offsets, default=0.0)
+        hi_x = far_x + max(x_offsets, default=0.0)
+        lo_y = self.start_y_mm + min(y_offsets, default=0.0)
+        hi_y = far_y + max(y_offsets, default=0.0)
+        if lo_x < 0 or hi_x > X_MAX_MM:
+            raise ValueError(
+                f"scan X range [{lo_x:.0f},{hi_x:.0f}]mm outside gantry travel [0,{X_MAX_MM:.0f}]"
+            )
+        if lo_y < 0 or hi_y > Y_MAX_MM:
+            raise ValueError(
+                f"scan Y range [{lo_y:.0f},{hi_y:.0f}]mm outside gantry travel [0,{Y_MAX_MM:.0f}]"
+            )
+        return self
 
     def plant_grid(self) -> list[tuple[int, int]]:
         """Return ordered (row, col) pairs for all plants in this config."""

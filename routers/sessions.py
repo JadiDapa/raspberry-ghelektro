@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from models.scan_config import ScanConfig as ScanConfigModel
 from models.watering_config import WateringConfig as WateringConfigModel
-from services import event_bus, session_service, watering_session_service
+from services import event_bus, session_service, session_state, watering_session_service
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
@@ -59,6 +59,10 @@ async def start_session(
     _active_session_id = session_id
     event_bus.create(session_id)
 
+    # Persist a tiny marker so a mid-session crash/power-loss is detected and
+    # cleaned up at the next startup (orphan recovery in main.py).
+    session_state.set_active(int(session_id), body.session_type)
+
     if body.session_type == "WATERING":
         wconfig = body.watering_config if body.watering_config is not None else WateringConfigModel()
         task = asyncio.create_task(
@@ -75,6 +79,9 @@ async def start_session(
     def _on_done(t: asyncio.Task) -> None:
         global _active_session_id
         _tasks.pop(session_id, None)
+        # The session loop finished (any outcome) — the process is alive and has
+        # handled it, so the orphan marker is no longer needed.
+        session_state.clear()
         if _active_session_id == session_id:
             _active_session_id = None
 

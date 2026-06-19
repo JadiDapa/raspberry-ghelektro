@@ -72,7 +72,35 @@ def disconnect():
 # ─── Low-level send/receive ───────────────────────────────────────────────────
 
 
+def _reconnect() -> bool:
+    """Reopen the UART after a disconnect. Returns True if open again."""
+    global _ser
+    try:
+        if _ser is not None and _ser.is_open:
+            _ser.close()
+    except Exception:
+        pass
+    _ser = None
+    connect()
+    return _ser is not None and _ser.is_open
+
+
 def _send(command: str, timeout_s: float = 10.0) -> dict:
+    """
+    Send a command and wait for OK/ERR. On a UART disconnect, attempt one
+    reconnect and retry; a failed reconnect raises (never silently stubs).
+    """
+    try:
+        return _send_once(command, timeout_s)
+    except serial.SerialException as e:
+        print(f"[soil] UART disconnect on {command!r} ({e}) — attempting reconnect")
+        if _reconnect():
+            print("[soil] reconnected — retrying command")
+            return _send_once(command, timeout_s)
+        raise RuntimeError(f"UART lost and reconnect failed: {e}")
+
+
+def _send_once(command: str, timeout_s: float = 10.0) -> dict:
     """Send a command and wait for OK/ERR. Runs in a thread."""
     if _ser is None or not _ser.is_open:
         print(f"[soil:stub] {command}")
@@ -105,7 +133,7 @@ def _send(command: str, timeout_s: float = 10.0) -> dict:
 
 async def _run(fn, *args):
     """Run blocking serial call in thread pool."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()  # get_event_loop() is deprecated in 3.10+
     return await loop.run_in_executor(None, fn, *args)
 
 

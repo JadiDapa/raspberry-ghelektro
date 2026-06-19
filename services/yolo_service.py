@@ -120,5 +120,5 @@ def _predict_from_bytes(image_bytes: bytes) -> list[dict]:
 
 async def run_inference_from_bytes(image_bytes: bytes) -> list[dict]:
     """Async wrapper — offloads blocking inference to thread pool."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()  # get_event_loop() is deprecated in 3.10+
     return await loop.run_in_executor(_executor, _predict_from_bytes, image_bytes)

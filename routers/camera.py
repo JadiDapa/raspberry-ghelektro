@@ -35,7 +35,7 @@ async def live_stream():
 @router.get("/snapshot")
 async def snapshot():
     """Returns the current frame as a single JPEG."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()  # get_event_loop() is deprecated in 3.10+
     frame = await loop.run_in_executor(None, _buffer.wait_for_frame, 3.0)
     if frame is None:
         raise HTTPException(503, "Camera not ready — no frame available")

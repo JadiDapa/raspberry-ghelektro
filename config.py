@@ -51,6 +51,20 @@ class Settings(BaseSettings):
     rpi_base_url: str = "http://localhost:8000"  # used to build absolute image URLs
     bed_id: str = "1"  # Next.js Bed.id this RPi manages
 
+    # ─── Sync resilience ────────────────────────────────────────────────
+    # Real-time posts to Next.js retry on transient failures (transport errors
+    # and 5xx) with exponential backoff; 4xx are not retried. If the whole
+    # end-of-session sync still can't reach Next.js, the full payload is written
+    # to outbox_dir and replayed on the next startup (see services/outbox.py).
+    sync_max_retries: int = 3
+    sync_backoff_base: float = 0.5  # seconds; doubles each attempt
+    outbox_dir: str = "pending_sync"
+
+    # Tiny persistent marker for the currently-running session. Written at session
+    # start, removed at clean end. If it survives a restart, the process died mid
+    # session → orphan recovery marks that session errored and safes the gantry.
+    runtime_dir: str = "runtime"
+
     # ─── Dev / debug ────────────────────────────────────────────────────
     # Set STUB_MODE=true to run the full session pipeline without any hardware.
     # All serial/camera calls already fall back to stubs when hardware is absent;

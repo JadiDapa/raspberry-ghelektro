@@ -213,7 +213,7 @@ async def mjpeg_stream():
     Async generator — yields MJPEG boundary chunks indefinitely.
     Plugs directly into FastAPI StreamingResponse.
     """
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()  # get_event_loop() is deprecated in 3.10+
     while True:
         frame = await loop.run_in_executor(_executor, _buffer.wait_for_frame, 2.0)
         if frame is None:
@@ -235,7 +235,7 @@ async def capture_bytes() -> bytes:
     Capture a single fresh frame and return raw JPEG bytes.
     Never writes to disk. Raises RuntimeError if no frame within 5 seconds.
     """
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()  # get_event_loop() is deprecated in 3.10+
     frame = await loop.run_in_executor(_executor, _buffer.wait_for_frame, 5.0)
     if frame is None:
         raise RuntimeError("Camera not ready — no frame received within 5 seconds")

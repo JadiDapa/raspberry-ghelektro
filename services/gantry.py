@@ -96,7 +96,39 @@ def disconnect():
 # ─── Low-level send/receive ───────────────────────────────────────────────────
 
 
+def _reconnect() -> bool:
+    """
+    Reopen the serial port after a disconnect (e.g. USB unplugged mid-session).
+    Returns True if the port is open again. Runs inside the executor thread.
+    """
+    global _ser
+    try:
+        if _ser is not None and _ser.is_open:
+            _ser.close()
+    except Exception:
+        pass
+    _ser = None
+    connect()  # deferred-open + boot wait; sets _ser to None on failure
+    return _ser is not None and _ser.is_open
+
+
 def _send(command: str, timeout_s: float = COMMAND_TIMEOUT) -> dict:
+    """
+    Send a command and wait for OK/ERR. On a serial disconnect, attempt one
+    reconnect and retry. A failed reconnect RAISES (never silently degrades to
+    stub) so the session loop can stop the machine instead of trusting fake data.
+    """
+    try:
+        return _send_once(command, timeout_s)
+    except serial.SerialException as e:
+        print(f"[gantry] serial disconnect on {command!r} ({e}) — attempting reconnect")
+        if _reconnect():
+            print("[gantry] reconnected — retrying command")
+            return _send_once(command, timeout_s)
+        raise RuntimeError(f"serial port lost and reconnect failed: {e}")
+
+
+def _send_once(command: str, timeout_s: float = COMMAND_TIMEOUT) -> dict:
     """
     Send a command to ESP32 and wait for OK/ERR response.
     Runs in a thread (called via run_in_executor).
@@ -141,6 +173,22 @@ def _send(command: str, timeout_s: float = COMMAND_TIMEOUT) -> dict:
 
 
 def _send_and_wait_done(command: str, timeout_s: float = MOVE_TIMEOUT) -> dict:
+    """
+    Send a MOVE/HOME and wait for OK + DONE. On a serial disconnect mid-move,
+    attempt one reconnect and retry; a failed reconnect RAISES so the session
+    aborts and the gantry is safed rather than continuing blind.
+    """
+    try:
+        return _send_and_wait_done_once(command, timeout_s)
+    except serial.SerialException as e:
+        print(f"[gantry] serial disconnect during move {command!r} ({e}) — attempting reconnect")
+        if _reconnect():
+            print("[gantry] reconnected — retrying move")
+            return _send_and_wait_done_once(command, timeout_s)
+        raise RuntimeError(f"serial port lost and reconnect failed: {e}")
+
+
+def _send_and_wait_done_once(command: str, timeout_s: float = MOVE_TIMEOUT) -> dict:
     """
     Send a MOVE command and wait for both OK (accepted) and DONE (finished).
     Runs in a thread (called via run_in_executor).

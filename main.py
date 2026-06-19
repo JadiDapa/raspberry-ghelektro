@@ -1,7 +1,9 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from config import settings
 from routers import sessions, camera, gantry, info, logs, servo, sensors
@@ -9,6 +11,29 @@ from services import camera as camera_service
 from services import gantry as gantry_service
 from services import yolo_service
 from services import soil_service
+from services import pi_client, outbox, session_state
+
+
+async def _recover_orphan_session() -> None:
+    """
+    If a session marker survived a restart, the process died mid-session. Safe the
+    gantry and mark that session errored in the dashboard so it doesn't hang in
+    RUNNING forever (and motors aren't left energized).
+    """
+    orphan = session_state.get_active()
+    if not orphan:
+        return
+    sid = orphan.get("session_id")
+    print(f"[orphan] unfinished session {sid} from a previous run — safing gantry + marking error")
+    try:
+        await gantry_service.emergency_stop()
+    except Exception as e:
+        print(f"[orphan] emergency_stop failed — {e}")
+    try:
+        await pi_client.post_error(int(sid))
+    except Exception as e:
+        print(f"[orphan] could not mark session {sid} as error in dashboard — {e}")
+    session_state.clear()
 
 
 @asynccontextmanager
@@ -17,6 +42,8 @@ async def lifespan(app: FastAPI):
     gantry_service.connect()
     soil_service.connect()
     yolo_service.load_model()
+    await _recover_orphan_session()
+    await outbox.drain()  # replay any sessions queued during a past outage
     print("[main] FarmBot API ready")
     yield
     gantry_service.disconnect()
@@ -46,6 +73,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Serve fallback-saved capture images so the dashboard can fetch them during a
+# /sync after an outage (see services/image_store.py). Mounting the "static" root
+# exposes <images_dir> at /static/images/...
+Path(settings.images_dir).mkdir(parents=True, exist_ok=True)
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 app.include_router(sessions.router)
 app.include_router(camera.router)
