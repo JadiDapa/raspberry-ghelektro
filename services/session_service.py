@@ -149,16 +149,30 @@ async def run_session(session_id: int, config: ScanConfig | None = None) -> None
 
             # — YOLO inference (FATAL on failure) —
             log.log_yolo_start(image_url or "(local)")
-            detections = await hardware.run_yolo(image_bytes)
+            detections, annotated_bytes = await hardware.run_yolo(image_bytes)
             total_fruits = sum(d["count"] for d in detections)
             counts = _counts(detections)
             log.log_yolo_done(detections, total_fruits)
+
+            # — Upload annotated frame to Next.js (NON-FATAL) —
+            # The boxes-drawn image is what the dashboard shows by default; the raw
+            # capture stays available behind the card toggle. None when YOLO ran in
+            # stub mode or rendering failed → dashboard falls back to the raw image.
+            annotated_url: str | None = None
+            if annotated_bytes is not None:
+                try:
+                    annotated_url = await pi_client.upload_image(
+                        session_id, plant_id, annotated_bytes, kind="annotated"
+                    )
+                except Exception as e:
+                    log.warn("SYNC", f"upload annotated plant {plant_id} failed (non-fatal) — {e}")
+                    state["sync_dirty"] = True
 
             # — Write vision result to Next.js (NON-FATAL) —
             await safe_post(
                 f"post_vision plant {plant_id}",
                 pi_client.post_vision(
-                    session_id, plant_id, row, col, image_url or "", detections
+                    session_id, plant_id, row, col, image_url or "", detections, annotated_url
                 ),
             )
             await event_bus.emit(
@@ -168,6 +182,7 @@ async def run_session(session_id: int, config: ScanConfig | None = None) -> None
                     "session_id": str(session_id),
                     "plant_id": plant_id,
                     "image_url": image_url,
+                    "annotated_image_url": annotated_url,
                     "detections": detections,
                     "total_fruits": total_fruits,
                 },
@@ -180,6 +195,7 @@ async def run_session(session_id: int, config: ScanConfig | None = None) -> None
                     "col": col,
                     "scanned_at": _now(),
                     "image_url": image_url,
+                    "annotated_image_url": annotated_url,
                     "total_fruits": total_fruits,
                     "ripe_count": counts["ripe"],
                     "turning_count": counts["turning"],
@@ -193,6 +209,9 @@ async def run_session(session_id: int, config: ScanConfig | None = None) -> None
                     # Keep bytes only if the live upload failed — needed for the
                     # offline /sync fallback so the image isn't lost.
                     "_image_bytes": image_bytes if image_url is None else None,
+                    "_annotated_bytes": (
+                        annotated_bytes if annotated_url is None else None
+                    ),
                 }
             )
             log.log_plant_done(plant_id)
@@ -285,11 +304,19 @@ async def _sync_fallback(
     for scan in plant_scans:
         scan = dict(scan)
         img_bytes = scan.pop("_image_bytes", None)
+        annotated_bytes = scan.pop("_annotated_bytes", None)
         if scan.get("image_url") is None and img_bytes is not None:
             try:
                 scan["image_url"] = image_store.save(session_id, scan["plant_id"], img_bytes)
             except Exception as e:
                 log.warn("SYNC", f"could not persist image for plant {scan['plant_id']} — {e}")
+        if scan.get("annotated_image_url") is None and annotated_bytes is not None:
+            try:
+                scan["annotated_image_url"] = image_store.save(
+                    session_id, scan["plant_id"], annotated_bytes, kind="annotated"
+                )
+            except Exception as e:
+                log.warn("SYNC", f"could not persist annotated image for plant {scan['plant_id']} — {e}")
         payload_scans.append(scan)
 
     payload = {

@@ -30,8 +30,12 @@ async def capture_image() -> bytes:
 
 # ─── YOLO ─────────────────────────────────────────────────────────────────────
 
-async def run_yolo(image_bytes: bytes) -> list[dict]:
-    """Run YOLOv11 inference on JPEG bytes. Returns detections per class."""
+async def run_yolo(image_bytes: bytes) -> tuple[list[dict], bytes | None]:
+    """Run YOLOv11 inference on JPEG bytes.
+
+    Returns (detections, annotated_jpeg_bytes). The annotated bytes are the frame
+    with detection boxes drawn, or None in stub mode / on render failure.
+    """
     from services.yolo_service import run_inference_from_bytes
     return await run_inference_from_bytes(image_bytes)
 

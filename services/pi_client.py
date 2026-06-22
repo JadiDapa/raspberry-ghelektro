@@ -95,16 +95,24 @@ async def patch_status(session_id: int, status: str) -> None:
     )
 
 
-async def upload_image(session_id: int, plant_index: int, image_bytes: bytes) -> str:
-    """POST image bytes as multipart → returns Next.js imageUrl."""
+async def upload_image(
+    session_id: int, plant_index: int, image_bytes: bytes, kind: str = "raw"
+) -> str:
+    """POST image bytes as multipart → returns Next.js imageUrl.
+
+    `kind` ("raw" | "annotated") distinguishes the plain capture from the
+    YOLO-annotated frame. The dashboard image route just stores the file and
+    returns a URL, so both kinds use the same endpoint; `kind` only affects the
+    stub URL and the multipart filename for traceability.
+    """
     if _is_stub():
-        url = f"stub://session-{session_id}/plant-{plant_index}.jpg"
-        print(f"[pi_client:stub] upload_image({session_id}, {plant_index}) → {url}")
+        url = f"stub://session-{session_id}/plant-{plant_index}-{kind}.jpg"
+        print(f"[pi_client:stub] upload_image({session_id}, {plant_index}, kind={kind}) → {url}")
         return url
     r = await _send(
         "POST",
         f"/api/sessions/{session_id}/captures/{plant_index}/image",
-        files={"file": ("plant.jpg", image_bytes, "image/jpeg")},
+        files={"file": (f"plant_{kind}.jpg", image_bytes, "image/jpeg")},
         timeout=30.0,
     )
     return r.json()["imageUrl"]
@@ -117,6 +125,7 @@ async def post_vision(
     col: int,
     image_url: str,
     detections: list[dict],
+    annotated_image_url: str | None = None,
 ) -> None:
     """POST /captures/{plantIndex}/vision — create Capture row with YOLO results."""
     if _is_stub():
@@ -135,6 +144,7 @@ async def post_vision(
             "row": row,
             "col": col,
             "imageUrl": image_url,
+            "annotatedImageUrl": annotated_image_url,
             "totalFruits": total_fruits,
             "ripeCount": counts["ripe"],
             "turningCount": counts["turning"],

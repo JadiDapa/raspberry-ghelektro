@@ -76,10 +76,18 @@ def _stub_detections() -> list[dict]:
     ]
 
 
-def _predict_array(arr) -> list[dict]:
-    """Run inference on a numpy BGR array. Returns detections per class."""
+def _predict_array(arr) -> tuple[list[dict], bytes | None]:
+    """
+    Run inference on a numpy BGR array.
+
+    Returns (detections, annotated_jpeg_bytes). The annotated frame is the input
+    image with YOLO boxes/labels drawn on it (via Ultralytics' result.plot()),
+    re-encoded as JPEG so it can be uploaded alongside the raw capture. It is
+    None in stub mode (no model) or if rendering/encoding fails — callers fall
+    back to the raw image in that case.
+    """
     if _model is None:
-        return _stub_detections()
+        return _stub_detections(), None
 
     results = _model.predict(
         source=arr,
@@ -107,10 +115,27 @@ def _predict_array(arr) -> list[dict]:
         if counts[cls] > 0
     ]
     print(f"[yolo] detections: {detections}")
-    return detections
+
+    annotated_bytes = _render_annotated(results)
+    return detections, annotated_bytes
 
 
-def _predict_from_bytes(image_bytes: bytes) -> list[dict]:
+def _render_annotated(results) -> bytes | None:
+    """Draw boxes on the frame and JPEG-encode it. Non-fatal — returns None on failure."""
+    try:
+        import cv2
+
+        annotated = results[0].plot()  # BGR ndarray with boxes + labels drawn
+        ok, buf = cv2.imencode(".jpg", annotated)
+        if ok:
+            return buf.tobytes()
+        print("[yolo] WARNING: could not JPEG-encode annotated frame")
+    except Exception as e:
+        print(f"[yolo] WARNING: could not render annotated image — {e}")
+    return None
+
+
+def _predict_from_bytes(image_bytes: bytes) -> tuple[list[dict], bytes | None]:
     import cv2
     import numpy as np
 
@@ -118,7 +143,10 @@ def _predict_from_bytes(image_bytes: bytes) -> list[dict]:
     return _predict_array(arr)
 
 
-async def run_inference_from_bytes(image_bytes: bytes) -> list[dict]:
-    """Async wrapper — offloads blocking inference to thread pool."""
+async def run_inference_from_bytes(image_bytes: bytes) -> tuple[list[dict], bytes | None]:
+    """Async wrapper — offloads blocking inference to thread pool.
+
+    Returns (detections, annotated_jpeg_bytes); see _predict_array.
+    """
     loop = asyncio.get_running_loop()  # get_event_loop() is deprecated in 3.10+
     return await loop.run_in_executor(_executor, _predict_from_bytes, image_bytes)
