@@ -60,6 +60,13 @@ class Settings(BaseSettings):
     sync_backoff_base: float = 0.5  # seconds; doubles each attempt
     outbox_dir: str = "pending_sync"
 
+    # ─── Scheduling ─────────────────────────────────────────────────────
+    # The RPi polls the dashboard for due scheduled sessions and launches them.
+    # Disable to opt out entirely. Polling is also skipped in stub mode / when
+    # dashboard_url is empty (no dashboard to ask).
+    schedule_enabled: bool = True
+    schedule_poll_seconds: int = 60
+
     # Tiny persistent marker for the currently-running session. Written at session
     # start, removed at clean end. If it survives a restart, the process died mid
     # session → orphan recovery marks that session errored and safes the gantry.

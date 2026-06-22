@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -11,7 +12,7 @@ from services import camera as camera_service
 from services import gantry as gantry_service
 from services import yolo_service
 from services import soil_service
-from services import pi_client, outbox, session_state
+from services import pi_client, outbox, session_state, scheduler
 
 
 async def _recover_orphan_session() -> None:
@@ -44,8 +45,14 @@ async def lifespan(app: FastAPI):
     yolo_service.load_model()
     await _recover_orphan_session()
     await outbox.drain()  # replay any sessions queued during a past outage
+    scheduler_task = asyncio.create_task(scheduler.run_scheduler_loop())
     print("[main] FarmBot API ready")
     yield
+    scheduler_task.cancel()
+    try:
+        await scheduler_task
+    except asyncio.CancelledError:
+        pass
     gantry_service.disconnect()
     soil_service.disconnect()
     camera_service.stop()

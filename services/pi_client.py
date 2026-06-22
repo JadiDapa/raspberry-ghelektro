@@ -207,6 +207,24 @@ async def sync_session(payload: dict) -> int | None:
         return None
 
 
+async def fetch_due_sessions(bed_id: int) -> list[dict]:
+    """
+    POST /api/schedules/tick — ask the dashboard which scheduled sessions are due.
+
+    The dashboard mints the PENDING sessions (session ids are never created here)
+    and returns the ready-to-run ones, oldest first. Each item:
+        {"session_id": int, "session_type": "SCAN"|"WATERING", "config": {...}|None}
+    Returns an empty list in stub mode (no dashboard to poll).
+    """
+    if _is_stub():
+        return []
+    r = await _send("POST", f"/api/schedules/tick?bedId={bed_id}")
+    try:
+        return r.json().get("sessions", [])
+    except Exception:
+        return []
+
+
 async def post_watering_stop(
     session_id: int,
     stop_index: int,

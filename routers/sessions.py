@@ -40,11 +40,13 @@ SSE_HEADERS = {
 # ─── Start ────────────────────────────────────────────────────────────────────
 
 
-@router.post("/{session_id}/start")
-async def start_session(
-    session_id: str,
-    body: StartSessionBody = Body(default=StartSessionBody()),
-):
+def launch_session(session_id: str, body: StartSessionBody) -> dict:
+    """
+    Start a session's async run loop. Shared by the HTTP /start route and the
+    scheduler (services/scheduler.py) so both honour the one-session-at-a-time
+    guard and orphan marker identically. Raises HTTPException(409) if another
+    session is already running.
+    """
     global _active_session_id
 
     if _active_session_id is not None and _active_session_id != session_id:
@@ -87,6 +89,14 @@ async def start_session(
 
     task.add_done_callback(_on_done)
     return {"session_id": session_id, "status": "running"}
+
+
+@router.post("/{session_id}/start")
+async def start_session(
+    session_id: str,
+    body: StartSessionBody = Body(default=StartSessionBody()),
+):
+    return launch_session(session_id, body)
 
 
 # ─── Stop ─────────────────────────────────────────────────────────────────────
