@@ -28,6 +28,13 @@ class ScanConfig(BaseModel):
         min_length=1,
     )
 
+    # Region of interest for YOLO counting, as a centered box sized by percentage
+    # of the frame. Detections whose box center falls outside this box are dropped
+    # so neighboring plants visible at the frame edges don't inflate the count.
+    # Default 100×100 = whole frame = no filtering (behaves as before).
+    roi_w_pct: float = Field(default=100.0, gt=0.0, le=100.0)
+    roi_h_pct: float = Field(default=100.0, gt=0.0, le=100.0)
+
     @model_validator(mode="after")
     def _within_travel(self) -> "ScanConfig":
         """Reject grids whose extreme position (incl. offsets) exits the envelope."""

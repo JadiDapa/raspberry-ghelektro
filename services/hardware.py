@@ -30,14 +30,19 @@ async def capture_image() -> bytes:
 
 # ─── YOLO ─────────────────────────────────────────────────────────────────────
 
-async def run_yolo(image_bytes: bytes) -> tuple[list[dict], bytes | None]:
+async def run_yolo(
+    image_bytes: bytes, roi: tuple[float, float] | None = None
+) -> tuple[list[dict], bytes | None]:
     """Run YOLOv11 inference on JPEG bytes.
 
+    `roi` is an optional (w_pct, h_pct) centered counting region: detections whose
+    box center falls outside it are dropped so neighboring plants aren't counted.
+
     Returns (detections, annotated_jpeg_bytes). The annotated bytes are the frame
-    with detection boxes drawn, or None in stub mode / on render failure.
+    with detection boxes (+ ROI rect) drawn, or None in stub mode / on render failure.
     """
     from services.yolo_service import run_inference_from_bytes
-    return await run_inference_from_bytes(image_bytes)
+    return await run_inference_from_bytes(image_bytes, roi)
 
 
 # ─── Per-plant sensors ────────────────────────────────────────────────────────

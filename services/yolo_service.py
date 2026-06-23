@@ -76,15 +76,38 @@ def _stub_detections() -> list[dict]:
     ]
 
 
-def _predict_array(arr) -> tuple[list[dict], bytes | None]:
+def _roi_box(arr, roi) -> tuple[float, float, float, float] | None:
+    """Return the centered ROI rect (x0, y0, x1, y1) in pixels, or None.
+
+    `roi` is (w_pct, h_pct) of the frame; None or 100×100 means whole frame, so
+    we return None to signal "no filtering / no rectangle to draw".
+    """
+    if roi is None:
+        return None
+    w_pct, h_pct = roi
+    if w_pct >= 100.0 and h_pct >= 100.0:
+        return None
+    h, w = arr.shape[:2]
+    bw = w * w_pct / 100.0
+    bh = h * h_pct / 100.0
+    x0 = (w - bw) / 2.0
+    y0 = (h - bh) / 2.0
+    return x0, y0, x0 + bw, y0 + bh
+
+
+def _predict_array(arr, roi=None) -> tuple[list[dict], bytes | None]:
     """
     Run inference on a numpy BGR array.
 
+    `roi` is an optional (w_pct, h_pct) centered region: a detection is counted
+    only when its bounding-box center falls inside that box, so fruit on
+    neighboring plants visible at the frame edges is ignored.
+
     Returns (detections, annotated_jpeg_bytes). The annotated frame is the input
-    image with YOLO boxes/labels drawn on it (via Ultralytics' result.plot()),
-    re-encoded as JPEG so it can be uploaded alongside the raw capture. It is
-    None in stub mode (no model) or if rendering/encoding fails — callers fall
-    back to the raw image in that case.
+    image with YOLO boxes/labels drawn on it (via Ultralytics' result.plot()) plus
+    the ROI rectangle, re-encoded as JPEG so it can be uploaded alongside the raw
+    capture. It is None in stub mode (no model) or if rendering/encoding fails —
+    callers fall back to the raw image in that case.
     """
     if _model is None:
         return _stub_detections(), None
@@ -96,16 +119,23 @@ def _predict_array(arr) -> tuple[list[dict], bytes | None]:
         verbose=False,
     )
 
+    box = _roi_box(arr, roi)
+
     counts: dict[str, int] = {cls: 0 for cls in FRUIT_CLASSES}
     best_conf: dict[str, float] = {cls: 0.0 for cls in FRUIT_CLASSES}
 
     for result in results:
-        for box in result.boxes:
-            cls_index = int(box.cls[0])
+        for det in result.boxes:
+            if box is not None:
+                cx, cy = (float(v) for v in det.xywh[0][:2])
+                x0, y0, x1, y1 = box
+                if not (x0 <= cx <= x1 and y0 <= cy <= y1):
+                    continue  # detection center outside ROI — belongs to a neighbor
+            cls_index = int(det.cls[0])
             cls_name = result.names.get(cls_index, "").lower()
             if cls_name in counts:
                 counts[cls_name] += 1
-                conf = float(box.conf[0])
+                conf = float(det.conf[0])
                 if conf > best_conf[cls_name]:
                     best_conf[cls_name] = conf
 
@@ -116,16 +146,19 @@ def _predict_array(arr) -> tuple[list[dict], bytes | None]:
     ]
     print(f"[yolo] detections: {detections}")
 
-    annotated_bytes = _render_annotated(results)
+    annotated_bytes = _render_annotated(results, box)
     return detections, annotated_bytes
 
 
-def _render_annotated(results) -> bytes | None:
-    """Draw boxes on the frame and JPEG-encode it. Non-fatal — returns None on failure."""
+def _render_annotated(results, roi_box=None) -> bytes | None:
+    """Draw boxes (+ ROI rect) on the frame and JPEG-encode it. Non-fatal — None on failure."""
     try:
         import cv2
 
         annotated = results[0].plot()  # BGR ndarray with boxes + labels drawn
+        if roi_box is not None:
+            x0, y0, x1, y1 = (int(round(v)) for v in roi_box)
+            cv2.rectangle(annotated, (x0, y0), (x1, y1), (0, 255, 255), 2)
         ok, buf = cv2.imencode(".jpg", annotated)
         if ok:
             return buf.tobytes()
@@ -135,18 +168,21 @@ def _render_annotated(results) -> bytes | None:
     return None
 
 
-def _predict_from_bytes(image_bytes: bytes) -> tuple[list[dict], bytes | None]:
+def _predict_from_bytes(image_bytes: bytes, roi=None) -> tuple[list[dict], bytes | None]:
     import cv2
     import numpy as np
 
     arr = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
-    return _predict_array(arr)
+    return _predict_array(arr, roi)
 
 
-async def run_inference_from_bytes(image_bytes: bytes) -> tuple[list[dict], bytes | None]:
+async def run_inference_from_bytes(
+    image_bytes: bytes, roi=None
+) -> tuple[list[dict], bytes | None]:
     """Async wrapper — offloads blocking inference to thread pool.
 
-    Returns (detections, annotated_jpeg_bytes); see _predict_array.
+    `roi` is an optional (w_pct, h_pct) centered counting region; see _predict_array.
+    Returns (detections, annotated_jpeg_bytes).
     """
     loop = asyncio.get_running_loop()  # get_event_loop() is deprecated in 3.10+
-    return await loop.run_in_executor(_executor, _predict_from_bytes, image_bytes)
+    return await loop.run_in_executor(_executor, _predict_from_bytes, image_bytes, roi)

@@ -149,7 +149,9 @@ async def run_session(session_id: int, config: ScanConfig | None = None) -> None
 
             # — YOLO inference (FATAL on failure) —
             log.log_yolo_start(image_url or "(local)")
-            detections, annotated_bytes = await hardware.run_yolo(image_bytes)
+            detections, annotated_bytes = await hardware.run_yolo(
+                image_bytes, roi=(config.roi_w_pct, config.roi_h_pct)
+            )
             total_fruits = sum(d["count"] for d in detections)
             counts = _counts(detections)
             log.log_yolo_done(detections, total_fruits)
