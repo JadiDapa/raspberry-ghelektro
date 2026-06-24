@@ -6,17 +6,25 @@ from fastapi import APIRouter, Body, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from models.dataset_config import DatasetConfig as DatasetConfigModel
 from models.scan_config import ScanConfig as ScanConfigModel
 from models.watering_config import WateringConfig as WateringConfigModel
-from services import event_bus, session_service, session_state, watering_session_service
+from services import (
+    dataset_session_service,
+    event_bus,
+    session_service,
+    session_state,
+    watering_session_service,
+)
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
 
 class StartSessionBody(BaseModel):
-    session_type: str = "SCAN"  # "SCAN" | "WATERING"
+    session_type: str = "SCAN"  # "SCAN" | "WATERING" | "DATA_COLLECTION"
     scan_config: Optional[ScanConfigModel] = None
     watering_config: Optional[WateringConfigModel] = None
+    dataset_config: Optional[DatasetConfigModel] = None
 
 # Registry of running asyncio tasks, keyed by session_id string.
 # Needed so stop_session can cancel the scan loop.
@@ -69,6 +77,11 @@ def launch_session(session_id: str, body: StartSessionBody) -> dict:
         wconfig = body.watering_config if body.watering_config is not None else WateringConfigModel()
         task = asyncio.create_task(
             watering_session_service.run_watering_session(int(session_id), wconfig)
+        )
+    elif body.session_type == "DATA_COLLECTION":
+        dconfig = body.dataset_config if body.dataset_config is not None else DatasetConfigModel()
+        task = asyncio.create_task(
+            dataset_session_service.run_dataset_session(int(session_id), dconfig)
         )
     else:
         sconfig = body.scan_config if body.scan_config is not None else ScanConfigModel()

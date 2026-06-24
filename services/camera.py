@@ -241,3 +241,13 @@ async def capture_bytes() -> bytes:
         raise RuntimeError("Camera not ready — no frame received within 5 seconds")
     print("[camera] snapshot captured → in-memory bytes")
     return frame
+
+
+def latest_jpeg() -> bytes | None:
+    """Return the most recent JPEG frame from the shared buffer (or None).
+
+    Synchronous, non-blocking read of whatever the background capture thread
+    last wrote. Used by the video recorder to sample frames while the gantry
+    sweeps; it tolerates None (no frame yet) and just skips that tick.
+    """
+    return _buffer.read()

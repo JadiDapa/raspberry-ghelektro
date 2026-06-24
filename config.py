@@ -10,6 +10,7 @@ class Settings(BaseSettings):
 
     # ─── Paths ─────────────────────────────────────────────────────────
     images_dir: str = "static/images"
+    videos_dir: str = "videos"  # recorded Data Collection sweeps (uploaded then kept)
     yolo_model_path: str = "best.pt"
 
     # ─── ESP32 #1 — Motion (USB serial) ────────────────────────────────

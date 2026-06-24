@@ -85,6 +85,7 @@ app.add_middleware(
 # /sync after an outage (see services/image_store.py). Mounting the "static" root
 # exposes <images_dir> at /static/images/...
 Path(settings.images_dir).mkdir(parents=True, exist_ok=True)
+Path(settings.videos_dir).mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 app.include_router(sessions.router)

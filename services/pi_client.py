@@ -118,6 +118,40 @@ async def upload_image(
     return r.json()["imageUrl"]
 
 
+async def upload_video(session_id: int, path: str) -> str:
+    """POST a recorded video file as multipart → returns Next.js videoUrl.
+
+    Used by the Data Collection session once its sweep finishes. Uses a long
+    timeout since the file can be large. Raises on failure (the dataset session
+    treats a failed upload as fatal but keeps the local file for recovery).
+    """
+    if _is_stub():
+        url = f"stub://session-{session_id}/dataset.mp4"
+        print(f"[pi_client:stub] upload_video({session_id}) → {url}")
+        return url
+    with open(path, "rb") as f:
+        data = f.read()
+    r = await _send(
+        "POST",
+        f"/api/sessions/{session_id}/video",
+        files={"file": ("dataset.mp4", data, "video/mp4")},
+        timeout=120.0,
+    )
+    return r.json()["videoUrl"]
+
+
+async def post_dataset_complete(session_id: int, summary: dict) -> None:
+    """POST /complete — finalize a Data Collection session with the video summary."""
+    if _is_stub():
+        print(f"[pi_client:stub] post_dataset_complete({session_id}, summary={summary})")
+        return
+    await _send(
+        "POST",
+        f"/api/sessions/{session_id}/complete",
+        json={"summary": summary},
+    )
+
+
 async def post_vision(
     session_id: int,
     plant_index: int,
