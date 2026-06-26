@@ -127,36 +127,17 @@ async def run_dataset_session(session_id: int, config: DatasetConfig | None = No
                     },
                 )
 
-        # ── Stop recording ─────────────────────────────────────────────
-        rec = video_recorder.stop()
-        recording_path = rec.get("path", recording_path)
-        log.info(f"recording stopped  frames={rec.get('frame_count')} "
-                 f"duration={rec.get('duration_sec')}s", tag="VIDEO")
-
-        # ── Upload video (FATAL on failure, but keep the local file) ────
-        # Tell the browser the upload has begun so it can show a loading state.
-        # This can take a while for a large sweep over a slow link, and it happens
-        # before session_complete, so without this the UI would look stalled.
-        log.step("VIDEO", "uploading recording to dashboard")
-        try:
-            size_mb = round(os.path.getsize(recording_path) / 1_048_576, 1)
-        except OSError:
-            size_mb = 0.0
-        await event_bus.emit(
-            str(session_id),
-            {
-                "type": "video_uploading",
-                "session_id": str(session_id),
-                "size_mb": size_mb,
-            },
-        )
-        video_url = await pi_client.upload_video(session_id, recording_path)
-        log.info(f"video uploaded → {video_url}", tag="VIDEO")
+        # ── Finalize recording: stop + upload (best-effort, never raises) ──
+        # Shared with the stop/error paths below so the footage is always saved
+        # to the dashboard no matter how the sweep ended, and the file is always
+        # kept on disk as a backup. See _finalize_recording.
+        rec = await _finalize_recording(session_id, log)
+        video_url = rec["video_url"]
 
         summary = {
             "videoUrl": video_url,
-            "durationSec": rec.get("duration_sec", 0.0),
-            "frameCount": rec.get("frame_count", 0),
+            "durationSec": rec["duration_sec"],
+            "frameCount": rec["frame_count"],
             "rowsSwept": rows_swept,
         }
         await safe_post("post_dataset_complete", pi_client.post_dataset_complete(session_id, summary))
@@ -183,25 +164,37 @@ async def run_dataset_session(session_id: int, config: DatasetConfig | None = No
 
     except asyncio.CancelledError:
         log.warn("SESSION", "CancelledError received — stopping cleanly")
-        _stop_recorder_quietly(log)
+        # Halt motion first, THEN save whatever was recorded so a manual stop
+        # still keeps and uploads the partial footage.
         await _safe_the_gantry(log)
+        rec = await _finalize_recording(session_id, log)
         await safe_post("patch_status stopped", pi_client.patch_status(session_id, "stopped"))
         await event_bus.emit(
             str(session_id),
-            {"type": "session_error", "session_id": str(session_id), "message": "cancelled"},
+            {
+                "type": "session_error",
+                "session_id": str(session_id),
+                "message": "cancelled",
+                "video_url": rec["video_url"],
+            },
         )
         log.log_session_stopped()
 
     except Exception as e:
         log.error("SESSION", f"unhandled exception: {e}")
-        _stop_recorder_quietly(log)
-        if recording_path:
-            log.warn("VIDEO", f"recording kept on disk for recovery → {recording_path}")
+        # A fault mid-sweep (e.g. a Z-limit hit) must not lose the recording:
+        # safe the gantry, then upload whatever was captured before the failure.
         await _safe_the_gantry(log)
+        rec = await _finalize_recording(session_id, log)
         await safe_post("post_error", pi_client.post_error(session_id))
         await event_bus.emit(
             str(session_id),
-            {"type": "session_error", "session_id": str(session_id), "message": str(e)},
+            {
+                "type": "session_error",
+                "session_id": str(session_id),
+                "message": str(e),
+                "video_url": rec["video_url"],
+            },
         )
         log.log_session_error(str(e))
 
@@ -211,13 +204,63 @@ async def run_dataset_session(session_id: int, config: DatasetConfig | None = No
         log.close()
 
 
-def _stop_recorder_quietly(log: SessionLogger) -> None:
-    """Best-effort stop of the recorder on the cancel/error paths."""
+async def _finalize_recording(session_id: int, log: SessionLogger) -> dict:
+    """Stop the recorder and upload whatever footage exists — on EVERY terminal
+    path (complete, stopped, error).
+
+    Best-effort and never raises: the recorded file is always kept on disk (its
+    path is logged) so a flaky upload or a mid-sweep fault can never lose footage,
+    and the caller doesn't have to restart the whole sweep. The dashboard's video
+    route attaches the returned URL to the session regardless of final status, so
+    the clip shows up even on a stopped/errored run.
+
+    Returns ``{video_url, duration_sec, frame_count}``. ``video_url`` is None when
+    there was nothing to upload or the upload failed (file still on disk).
+    """
+    meta: dict = {}
     try:
         if video_recorder.is_recording():
-            video_recorder.stop()
+            meta = video_recorder.stop()
     except Exception as e:
-        log.warn("VIDEO", f"cleanup: recorder stop failed — {e}")
+        log.warn("VIDEO", f"recorder stop failed — {e}")
+
+    path = meta.get("path")
+    result = {
+        "video_url": None,
+        "duration_sec": meta.get("duration_sec", 0.0),
+        "frame_count": meta.get("frame_count", 0),
+    }
+
+    if not path or not os.path.isfile(path) or os.path.getsize(path) == 0:
+        log.warn("VIDEO", "no usable recording to upload (recorder produced no file)")
+        return result
+
+    log.info(
+        f"recording stopped  frames={result['frame_count']} "
+        f"duration={result['duration_sec']}s",
+        tag="VIDEO",
+    )
+    log.warn("VIDEO", f"recording kept on disk → {path}")
+
+    try:
+        size_mb = round(os.path.getsize(path) / 1_048_576, 1)
+    except OSError:
+        size_mb = 0.0
+    await event_bus.emit(
+        str(session_id),
+        {"type": "video_uploading", "session_id": str(session_id), "size_mb": size_mb},
+    )
+
+    try:
+        log.step("VIDEO", "uploading recording to dashboard")
+        result["video_url"] = await pi_client.upload_video(session_id, path)
+        log.info(f"video uploaded → {result['video_url']}", tag="VIDEO")
+    except Exception as e:
+        # File stays on disk; the session still ends cleanly so the machine is
+        # freed for the next run without forcing a re-record.
+        log.warn("VIDEO", f"video upload failed — file kept on disk at {path} ({e})")
+
+    return result
 
 
 async def _safe_the_gantry(log: SessionLogger) -> None:
