@@ -15,6 +15,7 @@ Fatality model (mirrors session_service):
 """
 
 import asyncio
+import os
 from datetime import datetime, timezone
 
 from models.dataset_config import DatasetConfig
@@ -133,7 +134,22 @@ async def run_dataset_session(session_id: int, config: DatasetConfig | None = No
                  f"duration={rec.get('duration_sec')}s", tag="VIDEO")
 
         # ── Upload video (FATAL on failure, but keep the local file) ────
+        # Tell the browser the upload has begun so it can show a loading state.
+        # This can take a while for a large sweep over a slow link, and it happens
+        # before session_complete, so without this the UI would look stalled.
         log.step("VIDEO", "uploading recording to dashboard")
+        try:
+            size_mb = round(os.path.getsize(recording_path) / 1_048_576, 1)
+        except OSError:
+            size_mb = 0.0
+        await event_bus.emit(
+            str(session_id),
+            {
+                "type": "video_uploading",
+                "session_id": str(session_id),
+                "size_mb": size_mb,
+            },
+        )
         video_url = await pi_client.upload_video(session_id, recording_path)
         log.info(f"video uploaded → {video_url}", tag="VIDEO")
 

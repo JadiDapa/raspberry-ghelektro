@@ -61,6 +61,11 @@ class Settings(BaseSettings):
     sync_backoff_base: float = 0.5  # seconds; doubles each attempt
     outbox_dir: str = "pending_sync"
 
+    # Data Collection videos are large and may upload over a slow link (LAN, ngrok,
+    # Tailscale). The default 10s request timeout is far too short, so the video
+    # upload uses its own generous timeout. Raise it if sweeps run long.
+    video_upload_timeout: float = 600.0  # seconds for the multipart video POST
+
     # ─── Scheduling ─────────────────────────────────────────────────────
     # The RPi polls the dashboard for due scheduled sessions and launches them.
     # Disable to opt out entirely. Polling is also skipped in stub mode / when

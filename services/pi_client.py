@@ -16,6 +16,8 @@ a running Next.js instance.
 """
 
 import asyncio
+from pathlib import Path
+from typing import BinaryIO, Callable
 
 import httpx
 
@@ -37,6 +39,7 @@ async def _send(
     *,
     json: dict | None = None,
     files: dict | None = None,
+    files_factory: Callable[[], tuple[dict, BinaryIO]] | None = None,
     timeout: float = 10.0,
 ) -> httpx.Response:
     """
@@ -45,15 +48,25 @@ async def _send(
     Retries on transport errors (DNS/connect/read) and 5xx responses. Does NOT
     retry 4xx — those are caller bugs and won't get better by retrying. Raises the
     last exception once `sync_max_retries` attempts are used up.
+
+    For large uploads pass `files_factory` instead of `files`: it is called once
+    per attempt to build a fresh multipart dict plus the open file handle, so the
+    body is streamed from disk (not held in RAM) and a retry re-reads from the
+    start instead of resending a half-consumed handle. The handle is closed after
+    each attempt.
     """
     url = f"{_base()}{path}"
     attempts = max(1, settings.sync_max_retries)
     last_exc: Exception | None = None
 
     for attempt in range(1, attempts + 1):
+        attempt_files = files
+        fh: BinaryIO | None = None
+        if files_factory is not None:
+            attempt_files, fh = files_factory()
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
-                r = await client.request(method, url, json=json, files=files)
+                r = await client.request(method, url, json=json, files=attempt_files)
             if 400 <= r.status_code < 500:
                 r.raise_for_status()  # client error — fail fast, no retry
             if r.status_code >= 500:
@@ -73,6 +86,9 @@ async def _send(
             last_exc = e
         except httpx.HTTPError as e:  # transport / timeout
             last_exc = e
+        finally:
+            if fh is not None:
+                fh.close()
 
         if attempt < attempts:
             backoff = settings.sync_backoff_base * (2 ** (attempt - 1))
@@ -121,21 +137,37 @@ async def upload_image(
 async def upload_video(session_id: int, path: str) -> str:
     """POST a recorded video file as multipart → returns Next.js videoUrl.
 
-    Used by the Data Collection session once its sweep finishes. Uses a long
-    timeout since the file can be large. Raises on failure (the dataset session
-    treats a failed upload as fatal but keeps the local file for recovery).
+    Used by the Data Collection session once its sweep finishes. The file is
+    streamed from disk (not read into RAM) under `video_upload_timeout`, which is
+    far longer than the default request timeout since sweeps produce large files
+    over potentially slow links. Validates the file first so a missing/empty
+    recording fails with a clear message instead of an opaque upload error.
+
+    Raises on failure (the dataset session treats a failed upload as fatal but
+    keeps the local file for recovery).
     """
     if _is_stub():
         url = f"stub://session-{session_id}/dataset.mp4"
         print(f"[pi_client:stub] upload_video({session_id}) → {url}")
         return url
-    with open(path, "rb") as f:
-        data = f.read()
+
+    p = Path(path)
+    if not p.is_file():
+        raise FileNotFoundError(f"video file not found: {path}")
+    size = p.stat().st_size
+    if size == 0:
+        raise ValueError(f"video file is empty (0 bytes), nothing to upload: {path}")
+
+    def _video_files() -> tuple[dict, BinaryIO]:
+        fh = open(path, "rb")
+        return {"file": ("dataset.mp4", fh, "video/mp4")}, fh
+
+    print(f"[pi_client] uploading video {path} ({size / 1_048_576:.1f} MB) → dashboard")
     r = await _send(
         "POST",
         f"/api/sessions/{session_id}/video",
-        files={"file": ("dataset.mp4", data, "video/mp4")},
-        timeout=120.0,
+        files_factory=_video_files,
+        timeout=settings.video_upload_timeout,
     )
     return r.json()["videoUrl"]
 
