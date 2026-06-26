@@ -336,13 +336,15 @@ async def move_to_plant_with_config(row: int, col: int, config) -> dict:
 
 async def emergency_stop() -> dict:
     """
-    Immediately halt all motors AND de-energize the stepper drivers.
+    Immediately halt all motors, de-energize the stepper drivers, AND close
+    every relay (solenoid valve + water pump).
 
     `STOP` halts motion but leaves the DRV8825 EN pins enabled (motors stay
     powered/held). We follow it with `EN on=0` so the drivers are disabled at
-    click time — the motors go slack and no longer hold torque. Both steps are
-    best-effort and independent so an emergency stop always does as much as it
-    can even if the ESP32 is mid-command.
+    click time — the motors go slack and no longer hold torque. Finally we cut
+    both relays so nothing keeps watering. Every step is best-effort and
+    independent so an emergency stop always does as much as it can even if the
+    ESP32 is mid-command.
     """
     _state["busy"] = False
     print("[gantry] EMERGENCY STOP")
@@ -355,6 +357,12 @@ async def emergency_stop() -> dict:
         print("[gantry] stepper drivers DISABLED (emergency stop)")
     except Exception:
         pass  # EN cut is best-effort
+    for channel in ("sol", "dc"):
+        try:
+            await _run(_send, f"RELAY ch={channel} on=0")
+            print(f"[gantry] relay '{channel}' OFF (emergency stop)")
+        except Exception:
+            pass  # each relay cut is best-effort
     return get_state()
 
 

@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from routers.sessions import cancel_active_session
 from routers.sessions import is_active as session_is_active
 from services import gantry as gantry_service
 
@@ -63,9 +64,22 @@ async def home():
 
 @router.post("/stop")
 async def stop():
-    """Emergency stop — immediately halts all motors."""
+    """
+    Emergency stop — kill everything.
+
+    Cancels any running session, halts all motion, de-energizes the stepper
+    drivers, and closes every relay (solenoid valve + water pump). Each step is
+    best-effort so the stop does as much as it can even if part of the machine
+    is unresponsive.
+    """
+    cancelled = await cancel_active_session()
     result = await gantry_service.emergency_stop()
-    return {"ok": True, "stopped": True, "position": result}
+    return {
+        "ok": True,
+        "stopped": True,
+        "cancelled_session": cancelled,
+        "position": result,
+    }
 
 
 @router.get("/position")

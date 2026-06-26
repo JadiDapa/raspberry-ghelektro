@@ -38,6 +38,31 @@ def is_active() -> bool:
     return _active_session_id is not None
 
 
+async def cancel_active_session() -> str | None:
+    """
+    Cancel the currently running session task, if any, and return its id.
+
+    Used by the emergency stop so a single action also tears down a live
+    scan/watering/dataset run. Cancelling the task triggers the loop's own
+    cleanup (which safes the gantry); the emergency stop then safes it again
+    directly for good measure.
+    """
+    global _active_session_id
+    sid = _active_session_id
+    if sid is None:
+        return None
+    task = _tasks.pop(sid, None)
+    if task and not task.done():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    if _active_session_id == sid:
+        _active_session_id = None
+    return sid
+
+
 SSE_HEADERS = {
     "Cache-Control": "no-cache",
     "X-Accel-Buffering": "no",
