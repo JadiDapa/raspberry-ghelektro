@@ -25,6 +25,7 @@ silently forever.
 
 import asyncio
 import json
+import os
 import threading
 import time
 import serial
@@ -36,6 +37,13 @@ from models.scan_config import ScanConfig
 SERIAL_READ_TIMEOUT = 1.0  # per readline() call (s) — short so deadline loop ticks fast
 COMMAND_TIMEOUT = 10.0  # max wait for OK/ERR on quick commands (s)
 MOVE_TIMEOUT = 300.0  # max wait for DONE on MOVE/HOME (s) — covers a full 6 m traverse
+
+# On a COLD power-up the Pi boots before the CH340/CP2102 USB chip has enumerated,
+# so /dev/ttyUSB0 may not exist yet (and the ESP32 firmware may still be booting).
+# connect() retries open + PING for up to CONNECT_TIMEOUT before giving up, so the
+# service comes up healthy without a manual `sudo reboot`.
+CONNECT_TIMEOUT = 30.0  # total time to keep retrying the connection on startup (s)
+CONNECT_RETRY_INTERVAL = 2.0  # wait between connection attempts (s)
 
 # ─── Serial connection ────────────────────────────────────────────────────────
 
@@ -52,37 +60,81 @@ _state = {
 }
 
 
-def connect():
-    """Open serial port. Call once on startup."""
-    global _ser
-    try:
-        # FIX: Use deferred-open pattern to prevent DTR pulse on port open.
-        # On Linux, opening a USB serial port briefly asserts DTR even if you
-        # immediately set dtr=False afterward — the pulse is enough to reset the ESP32.
-        # By constructing Serial with port=None first, setting dtr=False before open(),
-        # then calling open(), we guarantee DTR is never asserted.
-        _ser = serial.Serial()
-        _ser.port = settings.esp32_port
-        _ser.baudrate = settings.esp32_baudrate
-        _ser.timeout = SERIAL_READ_TIMEOUT
-        _ser.dsrdtr = False
-        _ser.rtscts = False
-        _ser.dtr = False  # LOW = no reset pulse on open (active-low reset on ESP32)
-        _ser.rts = False  # FIX: RTS also resets ESP32 on many CH340/CP2102 boards.
-        #                        Must be False BEFORE open(), same reason as dtr=False.
-        _ser.open()
+def _open_port() -> serial.Serial:
+    """
+    Open the serial port and return it (raises on failure).
 
-        # Give the ESP32 time to finish booting.
-        # 5 s covers: CH340 enumeration (~0.5 s) + ESP32 ROM boot (~0.5 s) +
-        # Arduino setup() including VL53L1X init (~1-2 s) + margin.
-        # Old value was 3 s which was marginal when the TOF sensor is slow to init.
-        time.sleep(5.0)
-        _ser.reset_input_buffer()
-        print(f"[gantry] connected → {settings.esp32_port} @ {settings.esp32_baudrate}")
-    except Exception as e:
-        print(f"[gantry] WARNING: could not open serial port — {e}")
-        print("[gantry] running in stub mode")
-        _ser = None
+    Uses the deferred-open pattern to prevent a DTR pulse on port open. On Linux,
+    opening a USB serial port briefly asserts DTR even if you immediately set
+    dtr=False afterward — the pulse is enough to reset the ESP32. By constructing
+    Serial with port=None first, setting dtr=False before open(), then calling
+    open(), we guarantee DTR is never asserted.
+    """
+    ser = serial.Serial()
+    ser.port = settings.esp32_port
+    ser.baudrate = settings.esp32_baudrate
+    ser.timeout = SERIAL_READ_TIMEOUT
+    ser.dsrdtr = False
+    ser.rtscts = False
+    ser.dtr = False  # LOW = no reset pulse on open (active-low reset on ESP32)
+    ser.rts = False  # FIX: RTS also resets ESP32 on many CH340/CP2102 boards.
+    #                       Must be False BEFORE open(), same reason as dtr=False.
+    ser.open()
+    return ser
+
+
+def connect():
+    """
+    Open serial port to ESP32 #1 and verify it answers a PING. Call once on startup.
+
+    On a cold power-up the USB-serial chip may not have enumerated yet (so the port
+    node doesn't exist) and the ESP32 may still be booting. We retry open + PING for
+    up to CONNECT_TIMEOUT instead of giving up on the first failure — an open port
+    alone isn't "ready", so we confirm the firmware actually responds. Only after the
+    window elapses do we fall back to stub mode. This removes the need to `sudo reboot`
+    the Pi after a power cycle just to get the ESP32 recognized.
+    """
+    global _ser
+    deadline = time.monotonic() + CONNECT_TIMEOUT
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            if not os.path.exists(settings.esp32_port):
+                # Port node not present yet — USB hasn't enumerated after a cold boot.
+                raise serial.SerialException(f"{settings.esp32_port} does not exist yet")
+            _ser = _open_port()
+            # Give the ESP32 time to finish booting.
+            # 5 s covers: CH340 enumeration (~0.5 s) + ESP32 ROM boot (~0.5 s) +
+            # Arduino setup() including VL53L1X init (~1-2 s) + margin.
+            time.sleep(5.0)
+            _ser.reset_input_buffer()
+            # An open port isn't proof the firmware is up — confirm with a PING.
+            _send_once("PING")
+            print(
+                f"[gantry] connected → {settings.esp32_port} "
+                f"@ {settings.esp32_baudrate} (attempt {attempt})"
+            )
+            return
+        except Exception as e:
+            try:
+                if _ser is not None and _ser.is_open:
+                    _ser.close()
+            except Exception:
+                pass
+            _ser = None
+            if time.monotonic() >= deadline:
+                print(
+                    f"[gantry] WARNING: could not connect to ESP32 after "
+                    f"{attempt} attempts ({CONNECT_TIMEOUT:.0f}s) — {e}"
+                )
+                print("[gantry] running in stub mode")
+                return
+            print(
+                f"[gantry] connect attempt {attempt} failed ({e}) — "
+                f"retrying in {CONNECT_RETRY_INTERVAL:.0f}s..."
+            )
+            time.sleep(CONNECT_RETRY_INTERVAL)
 
 
 def disconnect():

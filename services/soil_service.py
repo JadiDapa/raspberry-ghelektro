@@ -16,6 +16,7 @@ Usage:
 import asyncio
 import json
 import threading
+import time
 import serial
 
 from config import settings
@@ -24,6 +25,12 @@ from config import settings
 
 _ser: serial.Serial | None = None
 _lock = threading.Lock()
+
+# On a cold power-up ESP32 #2 may still be booting when this service starts.
+# connect() retries open + PING for up to CONNECT_TIMEOUT before falling back to
+# stub mode, so a power cycle doesn't require a manual `sudo reboot`.
+CONNECT_TIMEOUT = 30.0  # total time to keep retrying the connection on startup (s)
+CONNECT_RETRY_INTERVAL = 2.0  # wait between connection attempts (s)
 
 # Sensor zone mapping — which sensor index covers which columns
 # cols 0–2 → sensor 0, cols 3–5 → sensor 1, cols 6–7 → sensor 2
@@ -39,26 +46,59 @@ _COL_TO_SENSOR = {
 }
 
 
-def connect():
-    """Open UART connection to ESP32 #2. Called once on startup."""
-    global _ser
-    try:
-        _ser = serial.Serial(
-            port=settings.soil_uart_port,
-            baudrate=settings.soil_uart_baudrate,
-            timeout=5.0,
-        )
-        import time
+def _open_port() -> serial.Serial:
+    """Open the UART port and return it (raises on failure)."""
+    return serial.Serial(
+        port=settings.soil_uart_port,
+        baudrate=settings.soil_uart_baudrate,
+        timeout=5.0,
+    )
 
-        time.sleep(2.0)
-        _ser.reset_input_buffer()
-        print(
-            f"[soil] connected → {settings.soil_uart_port} @ {settings.soil_uart_baudrate}"
-        )
-    except Exception as e:
-        print(f"[soil] WARNING: could not open UART — {e}")
-        print("[soil] running in stub mode")
-        _ser = None
+
+def connect():
+    """
+    Open UART to ESP32 #2 and verify it answers a PING. Called once on startup.
+
+    ttyAMA0 is a hardware UART so the node always exists, but on a cold power-up the
+    ESP32 may still be booting when we open it. We retry open + PING for up to
+    CONNECT_TIMEOUT — an open port alone isn't proof the firmware is up — and only
+    then fall back to stub mode. Avoids needing a `sudo reboot` after a power cycle.
+    """
+    global _ser
+    deadline = time.monotonic() + CONNECT_TIMEOUT
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            _ser = _open_port()
+            time.sleep(2.0)  # let the ESP32 finish booting
+            _ser.reset_input_buffer()
+            # An open port isn't proof the firmware is up — confirm with a PING.
+            _send_once("PING")
+            print(
+                f"[soil] connected → {settings.soil_uart_port} "
+                f"@ {settings.soil_uart_baudrate} (attempt {attempt})"
+            )
+            return
+        except Exception as e:
+            try:
+                if _ser is not None and _ser.is_open:
+                    _ser.close()
+            except Exception:
+                pass
+            _ser = None
+            if time.monotonic() >= deadline:
+                print(
+                    f"[soil] WARNING: could not connect to ESP32 #2 after "
+                    f"{attempt} attempts ({CONNECT_TIMEOUT:.0f}s) — {e}"
+                )
+                print("[soil] running in stub mode")
+                return
+            print(
+                f"[soil] connect attempt {attempt} failed ({e}) — "
+                f"retrying in {CONNECT_RETRY_INTERVAL:.0f}s..."
+            )
+            time.sleep(CONNECT_RETRY_INTERVAL)
 
 
 def disconnect():
@@ -105,8 +145,6 @@ def _send_once(command: str, timeout_s: float = 10.0) -> dict:
     if _ser is None or not _ser.is_open:
         print(f"[soil:stub] {command}")
         return {"stub": True, "pct": 0.0}  # lowest moisture → max valve duration
-
-    import time
 
     with _lock:
         _ser.reset_input_buffer()
