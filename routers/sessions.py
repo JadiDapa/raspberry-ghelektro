@@ -164,8 +164,18 @@ async def session_events(session_id: str):
                 break
             await asyncio.sleep(0.1)
         else:
-            error = {"type": "session_error", "message": "scan loop not started"}
-            yield f"data: {json.dumps(error)}\n\n"
+            # No event bus for this session. It either never started or — far more
+            # commonly — already finished and the bus was torn down while the
+            # browser was away. This is NOT a failure: tell the client to reconcile
+            # against the dashboard DB (the source of truth) instead of surfacing a
+            # bogus "session error". The browser polls the DB for the real outcome.
+            signal = {
+                "type": "session_reconnect",
+                "session_id": session_id,
+                "status": "gone",
+                "plant_count": 0,
+            }
+            yield f"data: {json.dumps(signal)}\n\n"
             return
 
         bus = event_bus.get(session_id)
