@@ -12,6 +12,7 @@ from services.camera import (
     CAMERA_DEVICE,
     get_controls,
     set_controls,
+    reset_to_defaults,
 )
 
 router = APIRouter(prefix="/camera", tags=["camera"])
@@ -36,6 +37,7 @@ class CameraSettings(BaseModel):
     contrast: int | None = None
     saturation: int | None = None
     sharpness: int | None = None
+    zoom: int | None = None
 
 
 @router.get("/stream")
@@ -84,6 +86,18 @@ async def update_settings(body: CameraSettings):
         raise HTTPException(400, "No settings provided")
     set_controls(updates)
     # Give the capture thread a moment to re-open and read actuals back.
+    await asyncio.sleep(0.6)
+    return get_controls()
+
+
+@router.post("/settings/reset")
+async def reset_settings():
+    """Reset the camera to its factory defaults — all auto modes on and every
+    image control (and resolution/fps) back to the driver's defaults. Uses
+    `v4l2-ctl` for accurate values when available. Returns the resulting state.
+    """
+    loop = asyncio.get_running_loop()  # v4l2-ctl shells out — keep it off the loop
+    await loop.run_in_executor(None, reset_to_defaults)
     await asyncio.sleep(0.6)
     return get_controls()
 

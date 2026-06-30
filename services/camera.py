@@ -1,4 +1,6 @@
 import asyncio
+import re
+import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -43,6 +45,7 @@ _controls: dict = {
     "contrast": None,
     "saturation": None,
     "sharpness": None,
+    "zoom": None,
 }
 
 # The keys a caller may set, with their value type for light validation.
@@ -59,6 +62,7 @@ _INT_KEYS = {
     "contrast",
     "saturation",
     "sharpness",
+    "zoom",
 }
 
 _controls_lock = threading.Lock()
@@ -68,6 +72,11 @@ _reopen_event = threading.Event()
 # the device. Lets the dashboard show what really took effect (drivers clamp or
 # ignore unsupported controls). Populated by `_read_actuals()`.
 _actuals: dict = {}
+
+# The camera's control values read once at the very first open, BEFORE we apply
+# anything — used as a fallback factory baseline for "reset to defaults" when the
+# more accurate `v4l2-ctl` query isn't available. See `_open_and_configure`.
+_factory_defaults: dict | None = None
 
 
 # ─── Shared frame buffer ──────────────────────────────────────────────────────
@@ -154,13 +163,13 @@ def _apply_controls(cap: "cv2.VideoCapture", c: dict) -> None:
     _set(cv2.CAP_PROP_CONTRAST, c.get("contrast"))
     _set(cv2.CAP_PROP_SATURATION, c.get("saturation"))
     _set(cv2.CAP_PROP_SHARPNESS, c.get("sharpness"))
+    _set(cv2.CAP_PROP_ZOOM, c.get("zoom"))
 
 
-def _read_actuals(cap: "cv2.VideoCapture") -> None:
-    """Read back what the driver granted so the dashboard can show real values."""
-    global _actuals
+def _read_control_values(cap: "cv2.VideoCapture") -> dict:
+    """Read every control we manage straight off the device, in our schema."""
     ae = cap.get(cv2.CAP_PROP_AUTO_EXPOSURE)
-    actuals = {
+    return {
         "frame_width": int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
         "frame_height": int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
         "fps": cap.get(cv2.CAP_PROP_FPS),
@@ -175,17 +184,30 @@ def _read_actuals(cap: "cv2.VideoCapture") -> None:
         "contrast": cap.get(cv2.CAP_PROP_CONTRAST),
         "saturation": cap.get(cv2.CAP_PROP_SATURATION),
         "sharpness": cap.get(cv2.CAP_PROP_SHARPNESS),
+        "zoom": cap.get(cv2.CAP_PROP_ZOOM),
     }
+
+
+def _read_actuals(cap: "cv2.VideoCapture") -> None:
+    """Read back what the driver granted so the dashboard can show real values."""
+    global _actuals
+    values = _read_control_values(cap)
     with _controls_lock:
-        _actuals = actuals
+        _actuals = values
 
 
 def _open_and_configure() -> "cv2.VideoCapture":
     """Open the capture device and push the current controls. Single source of
     truth for device setup — first start, reconnect and a settings change all
     funnel through here."""
+    global _factory_defaults
     cap = cv2.VideoCapture(CAMERA_DEVICE, cv2.CAP_V4L2)
     cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))  # type: ignore
+    # First successful open this session: capture the driver's control values
+    # BEFORE we change anything, as a fallback factory baseline for reset.
+    if cap.isOpened() and _factory_defaults is None:
+        _factory_defaults = _read_control_values(cap)
+        print(f"[camera] captured factory baseline → {_factory_defaults}")
     with _controls_lock:
         snapshot = dict(_controls)
     _apply_controls(cap, snapshot)
@@ -217,6 +239,113 @@ def get_controls() -> dict:
     """Current desired controls plus the values the driver actually granted."""
     with _controls_lock:
         return {"controls": dict(_controls), "actuals": dict(_actuals)}
+
+
+# ─── Factory reset ────────────────────────────────────────────────────────────
+# V4L2 control name → our numeric control key. Only the numeric image controls
+# are mapped: the auto toggles are forced to auto on reset (the universal factory
+# state), which side-steps the menu-value differences between kernel versions
+# (e.g. exposure_auto vs auto_exposure). Names vary across kernels, so several
+# aliases map to the same key.
+_V4L2_NUMERIC_MAP = {
+    "brightness": "brightness",
+    "contrast": "contrast",
+    "saturation": "saturation",
+    "sharpness": "sharpness",
+    "gain": "gain",
+    "white_balance_temperature": "wb_temperature",
+    "exposure_absolute": "exposure",
+    "exposure_time_absolute": "exposure",
+    "focus_absolute": "focus",
+    "zoom_absolute": "zoom",
+}
+
+
+def _query_v4l2_defaults(device: str) -> dict:
+    """Parse `v4l2-ctl --list-ctrls` for each control's factory `default=`.
+
+    Returns a dict in our control schema (numeric keys only), or {} when v4l2-ctl
+    is missing / outputs nothing. This is the accurate, boot-independent source of
+    the camera's true defaults; the caller falls back to the first-open baseline.
+    """
+    try:
+        proc = subprocess.run(
+            ["v4l2-ctl", "-d", device, "--list-ctrls"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (FileNotFoundError, OSError, subprocess.SubprocessError) as e:
+        print(f"[camera] v4l2-ctl unavailable ({e}) — using first-open baseline")
+        return {}
+
+    defaults: dict = {}
+    for line in proc.stdout.splitlines():
+        m = re.search(r"^\s*([a-z0-9_]+)\s+0x[0-9a-f]+.*\bdefault=(-?\d+)", line)
+        if not m:
+            continue
+        key = _V4L2_NUMERIC_MAP.get(m.group(1))
+        if key:
+            defaults[key] = int(m.group(2))
+    return defaults
+
+
+def reset_to_defaults() -> dict:
+    """Return the camera to its out-of-box look: all auto modes on, and every
+    image control back to the driver's factory default (resolution/fps included).
+    Re-opens the device so OpenCV's cached values don't immediately re-apply.
+
+    Numeric defaults come from `v4l2-ctl` when available, else the values captured
+    at first open this session. Auto toggles are always set on.
+    """
+    numeric = _query_v4l2_defaults(CAMERA_DEVICE)
+    fd = _factory_defaults or {}
+    if not numeric:
+        numeric = {
+            k: fd.get(k)
+            for k in (
+                "brightness",
+                "contrast",
+                "saturation",
+                "sharpness",
+                "gain",
+                "wb_temperature",
+                "exposure",
+                "focus",
+                "zoom",
+            )
+        }
+
+    with _controls_lock:
+        _controls.update(
+            {
+                # Resolution/fps back to the factory baseline if we have it, else
+                # the config defaults already in _controls are left untouched.
+                "frame_width": int(fd["frame_width"])
+                if fd.get("frame_width")
+                else _controls["frame_width"],
+                "frame_height": int(fd["frame_height"])
+                if fd.get("frame_height")
+                else _controls["frame_height"],
+                "fps": int(fd["fps"]) if fd.get("fps") else _controls["fps"],
+                "auto_exposure": True,
+                "auto_wb": True,
+                "autofocus": True,
+                "exposure": numeric.get("exposure"),
+                "gain": numeric.get("gain"),
+                "wb_temperature": numeric.get("wb_temperature"),
+                "focus": numeric.get("focus"),
+                "brightness": numeric.get("brightness"),
+                "contrast": numeric.get("contrast"),
+                "saturation": numeric.get("saturation"),
+                "sharpness": numeric.get("sharpness"),
+                "zoom": numeric.get("zoom"),
+            }
+        )
+        merged = dict(_controls)
+    _reopen_event.set()
+    print(f"[camera] reset to factory defaults → {merged}")
+    return merged
 
 
 # ─── Stub frame generator ─────────────────────────────────────────────────────
