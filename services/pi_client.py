@@ -301,6 +301,26 @@ async def fetch_due_sessions(bed_id: int) -> list[dict]:
         return []
 
 
+async def fetch_camera_settings(bed_id: int) -> dict | None:
+    """
+    GET /api/camera-settings?bedId={bed} — load this bed's saved camera controls.
+
+    Called once at startup so manual exposure/white-balance/focus/etc. chosen in
+    the dashboard survive an RPi reboot (the dashboard is the source of truth).
+    Returns the snake_case control dict the camera service understands, or None
+    when there is nothing saved / no dashboard to ask (stub mode). Non-fatal — a
+    failure just leaves the camera on its built-in defaults.
+    """
+    if _is_stub():
+        return None
+    r = await _send("GET", f"/api/camera-settings?bedId={bed_id}")
+    try:
+        data = r.json()
+        return data.get("settings") if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
 async def post_watering_stop(
     session_id: int,
     stop_index: int,

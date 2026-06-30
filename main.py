@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from config import settings
 from routers import sessions, camera, gantry, info, logs, servo, sensors
 from services import camera as camera_service
+from services.camera import set_controls as camera_set_controls
 from services import gantry as gantry_service
 from services import yolo_service
 from services import soil_service
@@ -37,9 +38,24 @@ async def _recover_orphan_session() -> None:
     session_state.clear()
 
 
+async def _restore_camera_settings() -> None:
+    """Load this bed's saved camera controls from the dashboard and apply them so
+    manual exposure/WB/focus survive a reboot. Non-fatal: any failure just leaves
+    the camera on its defaults."""
+    try:
+        saved = await pi_client.fetch_camera_settings(int(settings.bed_id))
+    except Exception as e:
+        print(f"[camera] could not load saved settings from dashboard — {e}")
+        return
+    if saved:
+        camera_set_controls(saved)
+        print("[camera] restored saved settings from dashboard")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     camera_service.start()
+    await _restore_camera_settings()
     gantry_service.connect()
     soil_service.connect()
     yolo_service.load_model()
