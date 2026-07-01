@@ -70,11 +70,12 @@ async def run_watering_session(
             },
         )
 
-        # ── Step 1: Raise Z to max for TOF sweep ──────────────────────
-        log.step("GANTRY", f"raising Z to z_max={config.z_max_mm}mm for TOF sweep")
-        await gantry_service.move_to(0.0, 0.0, config.z_max_mm)
-
-        # ── Step 2: TOF height sweep ───────────────────────────────────
+        # ── Step 1 & 2: Continuous serpentine TOF height sweep ─────────
+        # No stop-and-scan: the gantry sweeps each row in one uninterrupted
+        # motion while the TOF is polled ~config.tof_sample_hz times a second.
+        # Each sample is bucketed by X into its nearest column, so the per-column
+        # and global max heights match the old discrete results — only the
+        # acquisition method changed. Downstream (fuzzy + watering) is unchanged.
         await event_bus.emit(
             str(session_id),
             {
@@ -84,44 +85,71 @@ async def run_watering_session(
             },
         )
 
-        for pos_idx, (row, col) in enumerate(positions, start=1):
-            x_mm = config.col_x_mm(col)
-            y_mm = config.row_y_mm(row)
+        sample_interval = 1.0 / config.tof_sample_hz
+        # (row, col) → minimum TOF seen (cm); lower = closer surface = taller plant
+        pos_min_tof: dict[tuple[int, int], float] = {}
+        position_index = 0
 
-            log.step("TOF", f"moving to row={row} col={col} ({x_mm}mm, {y_mm}mm)")
+        for row, x_start, x_end, y_mm in config.sweep_segments():
+            # Move to the row's start corner first (this also raises Z to z_max
+            # on row 0; later rows just step Y since serpentine ends at the far
+            # corner, which is the next row's start).
+            log.step("TOF", f"row={row}: positioning to x={x_start:.0f}mm y={y_mm:.0f}mm z_max={config.z_max_mm}mm")
             await gantry_service.move_to(
-                x_mm, y_mm, config.z_max_mm,
+                x_start, y_mm, config.z_max_mm,
                 speed=int(config.sweep_speed_mm_sec),
             )
 
-            # Take N TOF readings; keep the minimum (closest surface = tallest plant)
-            readings: list[float] = []
-            for _ in range(config.tof_samples):
-                tof_cm = await hardware.read_tof_distance()
-                readings.append(tof_cm)
-                await asyncio.sleep(0.1)
-
-            min_tof_cm = min(readings)
-            # height above bed floor: max Z in cm minus TOF reading
-            height_cm = round((config.z_max_mm / 10.0) - min_tof_cm, 1)
-
-            # Track per-column minimum TOF (tallest plant in each column)
-            if col not in col_min_tof or min_tof_cm < col_min_tof[col]:
-                col_min_tof[col] = min_tof_cm
-
-            log.ok("TOF", f"row={row} col={col} tof={min_tof_cm:.1f}cm height={height_cm:.1f}cm")
-            await event_bus.emit(
-                str(session_id),
-                {
-                    "type": "tof_position_scanned",
-                    "session_id": str(session_id),
-                    "row": row,
-                    "col": col,
-                    "height_cm": height_cm,
-                    "position": pos_idx,
-                    "total": len(positions),
-                },
+            log.step(
+                "TOF",
+                f"row={row}: continuous sweep to x={x_end:.0f}mm "
+                f"@ {config.sweep_speed_mm_sec:.0f}mm/s, {config.tof_sample_hz:g}Hz",
             )
+            samples = await gantry_service.sweep_tof(
+                x_end, y_mm, config.z_max_mm,
+                speed=int(config.sweep_speed_mm_sec),
+                sample_interval_s=sample_interval,
+            )
+            log.ok("TOF", f"row={row}: captured {len(samples)} height samples")
+
+            # Bucket each sample into its nearest column; keep the closest (min TOF).
+            for s in samples:
+                key = (row, config.nearest_col(s["x"]))
+                if key not in pos_min_tof or s["tof_cm"] < pos_min_tof[key]:
+                    pos_min_tof[key] = s["tof_cm"]
+
+            # Emit one position event per column in this row (ascending col) so
+            # the dashboard progress/heights stay identical to stop-and-scan.
+            for col in range(config.cols):
+                position_index += 1
+                min_tof_cm = pos_min_tof.get((row, col))
+                if min_tof_cm is None:
+                    # No valid sample over this column (sensor miss) — leave it
+                    # out of col_min_tof so watering falls back to the global min.
+                    height_cm = 0.0
+                else:
+                    height_cm = round((config.z_max_mm / 10.0) - min_tof_cm, 1)
+                    if col not in col_min_tof or min_tof_cm < col_min_tof[col]:
+                        col_min_tof[col] = min_tof_cm
+
+                log.ok(
+                    "TOF",
+                    f"row={row} col={col} "
+                    f"tof={'n/a' if min_tof_cm is None else f'{min_tof_cm:.1f}cm'} "
+                    f"height={height_cm:.1f}cm",
+                )
+                await event_bus.emit(
+                    str(session_id),
+                    {
+                        "type": "tof_position_scanned",
+                        "session_id": str(session_id),
+                        "row": row,
+                        "col": col,
+                        "height_cm": height_cm,
+                        "position": position_index,
+                        "total": len(positions),
+                    },
+                )
 
         # Global max height: z_max minus the globally smallest TOF reading
         global_min_tof = min(col_min_tof.values()) if col_min_tof else 0.0

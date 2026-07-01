@@ -15,7 +15,8 @@ class WateringConfig(BaseModel):
     start_y_mm: float = Field(default=0.0, ge=0.0, le=Y_MAX_MM)
     z_max_mm: float = Field(default=0.0, ge=0.0, le=Z_MAX_MM)       # Z raised to this for TOF sweep
     z_water_mm: float = Field(default=50.0, ge=0.0, le=Z_MAX_MM)    # Z working height during valve open
-    tof_samples: int = Field(default=5, ge=1, le=50)                # TOF readings per plant position
+    tof_samples: int = Field(default=5, ge=1, le=50)                # legacy (stop-and-scan); kept for payload compat
+    tof_sample_hz: float = Field(default=5.0, gt=0.0, le=50.0)      # TOF polls/sec during the continuous sweep
     sweep_speed_mm_sec: float = Field(default=150.0, gt=0.0, le=5000.0)
     water_speed_mm_sec: float = Field(default=100.0, gt=0.0, le=5000.0)
 
@@ -51,3 +52,29 @@ class WateringConfig(BaseModel):
             for row in range(self.rows)
             for col in range(self.cols)
         ]
+
+    def sweep_segments(self) -> list[tuple[int, float, float, float]]:
+        """Continuous serpentine height-sweep segments, one per row.
+
+        Returns (row, x_start, x_end, y) in travel order. Even rows sweep
+        col 0 → last, odd rows last → col 0, so consecutive rows connect with a
+        short Y step instead of a long return — one uninterrupted pass over all
+        plants while the TOF is polled the whole way.
+        """
+        first_x = self.col_x_mm(0)
+        last_x = self.col_x_mm(self.cols - 1)
+        segments: list[tuple[int, float, float, float]] = []
+        for row in range(self.rows):
+            y = self.row_y_mm(row)
+            if row % 2 == 0:
+                segments.append((row, first_x, last_x, y))
+            else:
+                segments.append((row, last_x, first_x, y))
+        return segments
+
+    def nearest_col(self, x_mm: float) -> int:
+        """Column whose center is closest to `x_mm` — buckets a mid-sweep sample."""
+        if self.gap_x_mm <= 0:
+            return 0
+        col = round((x_mm - self.start_x_mm) / self.gap_x_mm)
+        return max(0, min(self.cols - 1, int(col)))

@@ -361,6 +361,143 @@ async def move_to(x: float, y: float, z: float, speed: int = 150) -> dict:
         raise RuntimeError(f"Move failed: {e}")
 
 
+async def sweep_tof(
+    x_target: float,
+    y: float,
+    z: float,
+    speed: int = 150,
+    sample_interval_s: float = 0.2,
+) -> list[dict]:
+    """
+    Continuous height sweep: fire ONE MOVE to (x_target, y, z) and, while the
+    gantry travels, poll the TOF sensor roughly every `sample_interval_s` s
+    without ever stopping. Returns a list of ``{"x": mm, "tof_cm": cm}`` samples
+    (out-of-range/no-data readings are dropped).
+
+    Unlike move_to(), this holds the serial lock for the whole move and drives
+    the MOVE↔TOF protocol itself, because a normal _send would reset the input
+    buffer between commands and discard the pending DONE. The ESP32 loop() polls
+    serial every iteration and MOVE is async, so it answers TOF mid-move.
+    """
+    _state["busy"] = True
+    print(f"[gantry] sweep_tof → X={x_target} Y={y} Z={z} speed={speed} interval={sample_interval_s}s")
+    try:
+        samples = await _run(_sweep_tof_once, x_target, y, z, speed, sample_interval_s)
+        _state.update({"x": x_target, "y": y, "z": z, "busy": False})
+        return samples
+    except Exception as e:
+        _state["busy"] = False
+        raise RuntimeError(f"TOF sweep failed: {e}")
+
+
+def _sweep_tof_once(
+    x_target: float, y: float, z: float, speed: int, sample_interval_s: float
+) -> list[dict]:
+    """
+    Blocking body of sweep_tof — runs in the serial executor thread.
+
+    Protocol: write MOVE, wait for the accept OK, then loop: emit a TOF request
+    every `sample_interval_s` (only one outstanding at a time so it self-throttles
+    if the sensor is slower), read responses, and stop when DONE arrives. Any ERR
+    (e.g. limit_triggered) raises so the session aborts, matching move_to().
+    """
+    cmd = f"MOVE x={x_target} y={y} z={z} speed={speed}"
+
+    if _ser is None or not _ser.is_open:
+        # Stub: synthesize a linear set of samples along the X path.
+        print(f"[gantry:stub] sweep {cmd}")
+        start_x = _state["x"]
+        span = abs(x_target - start_x)
+        duration = span / speed if speed else 0.0
+        n = max(1, int(duration / sample_interval_s)) if sample_interval_s > 0 else 1
+        samples: list[dict] = []
+        for i in range(n + 1):
+            frac = i / n if n else 1.0
+            xi = start_x + (x_target - start_x) * frac
+            samples.append({"x": round(xi, 1), "tof_cm": 100.0})
+            if not settings.stub_mode:
+                time.sleep(sample_interval_s)
+        return samples
+
+    samples = []
+    with _lock:
+        _ser.reset_input_buffer()
+        prev_timeout = _ser.timeout
+        # Short readline timeout so the loop ticks fast enough to pace TOF
+        # requests and notice DONE promptly (instead of blocking up to 1 s).
+        _ser.timeout = min(0.05, sample_interval_s)
+        try:
+            _ser.write((cmd + "\n").encode())
+            print(f"[gantry] → {cmd}")
+
+            deadline = time.monotonic() + MOVE_TIMEOUT
+            done = False
+            move_started = False
+
+            # 1. Wait for the MOVE to be accepted (OK), or finish immediately.
+            while not move_started and not done:
+                if time.monotonic() > deadline:
+                    raise RuntimeError(f"timeout waiting for MOVE ack: {cmd!r}")
+                raw = _ser.readline().decode(errors="replace").strip()
+                if not raw:
+                    continue
+                print(f"[gantry] ← {raw}")
+                if raw.startswith("ERR "):
+                    raise RuntimeError(f"ESP32 error: {raw[4:]}")
+                if raw.startswith("DONE "):
+                    done = True  # zero-length move — nothing to sample
+                elif raw.startswith("OK "):
+                    try:
+                        payload = json.loads(raw[3:])
+                    except json.JSONDecodeError:
+                        continue
+                    if payload.get("note") == "already at target":
+                        done = True
+                    else:
+                        move_started = True
+                # any other line is a debug echo — keep waiting
+
+            # 2. Sample TOF while the gantry travels, until DONE.
+            next_sample = time.monotonic()
+            awaiting_tof = False
+            while not done:
+                now = time.monotonic()
+                if now > deadline:
+                    raise RuntimeError(f"timeout ({MOVE_TIMEOUT:.0f}s) waiting for DONE: {cmd!r}")
+
+                if not awaiting_tof and now >= next_sample:
+                    _ser.write(b"TOF\n")
+                    awaiting_tof = True
+                    next_sample += sample_interval_s
+                    if next_sample < now:  # fell behind — don't spiral
+                        next_sample = now + sample_interval_s
+
+                raw = _ser.readline().decode(errors="replace").strip()
+                if not raw:
+                    continue
+                if raw.startswith("ERR "):
+                    raise RuntimeError(f"ESP32 error: {raw[4:]}")
+                if raw.startswith("DONE "):
+                    print(f"[gantry] ← {raw}")
+                    done = True
+                    break
+                if raw.startswith("OK "):
+                    awaiting_tof = False
+                    try:
+                        payload = json.loads(raw[3:])
+                    except json.JSONDecodeError:
+                        continue
+                    mm = payload.get("mm")
+                    if mm is not None:
+                        xi = payload.get("x", _state["x"])
+                        samples.append({"x": float(xi), "tof_cm": round(mm / 10.0, 1)})
+                # else: debug echo — ignore
+
+            return samples
+        finally:
+            _ser.timeout = prev_timeout
+
+
 async def move_to_plant(row: int, col: int) -> dict:
     """Move above a plant grid position using hardcoded defaults."""
     return await move_to_plant_with_config(row, col, ScanConfig())
