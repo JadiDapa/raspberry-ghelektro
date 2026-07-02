@@ -361,6 +361,33 @@ async def move_to(x: float, y: float, z: float, speed: int = 150) -> dict:
         raise RuntimeError(f"Move failed: {e}")
 
 
+# Stub height used when the TOF is unavailable, mirroring hardware.read_tof_distance()
+# so a run without a connected sensor still produces a plausible sweep for testing.
+_STUB_TOF_CM = 100.0
+
+
+def _synthetic_tof_samples(
+    start_x: float, x_target: float, speed: int, sample_interval_s: float, *, pace: bool
+) -> list[dict]:
+    """Linear set of stub {x, tof_cm} samples along the X path.
+
+    Used when there is no ESP32 at all (`pace=True` — sleep to simulate the
+    real sweep duration) or when the ESP32 is present but the TOF sensor is
+    missing (`pace=False` — the move already happened in real time).
+    """
+    span = abs(x_target - start_x)
+    duration = span / speed if speed else 0.0
+    n = max(1, int(duration / sample_interval_s)) if sample_interval_s > 0 else 1
+    out: list[dict] = []
+    for i in range(n + 1):
+        frac = i / n if n else 1.0
+        xi = start_x + (x_target - start_x) * frac
+        out.append({"x": round(xi, 1), "tof_cm": _STUB_TOF_CM})
+        if pace and not settings.stub_mode:
+            time.sleep(sample_interval_s)
+    return out
+
+
 async def sweep_tof(
     x_target: float,
     y: float,
@@ -398,28 +425,24 @@ def _sweep_tof_once(
 
     Protocol: write MOVE, wait for the accept OK, then loop: emit a TOF request
     every `sample_interval_s` (only one outstanding at a time so it self-throttles
-    if the sensor is slower), read responses, and stop when DONE arrives. Any ERR
-    (e.g. limit_triggered) raises so the session aborts, matching move_to().
+    if the sensor is slower), read responses, and stop when DONE arrives.
+
+    Error handling mirrors the machine's fatality model: a motion fault
+    (`ERR limit_triggered`) raises so the session aborts and safes the gantry,
+    but a TOF fault (`ERR TOF sensor not ready` — sensor unplugged) is NOT fatal.
+    Those samples are dropped, and if the sensor is missing for the whole sweep
+    the result falls back to stub heights so a run without a TOF still completes.
     """
     cmd = f"MOVE x={x_target} y={y} z={z} speed={speed}"
+    start_x = _state["x"]
 
     if _ser is None or not _ser.is_open:
-        # Stub: synthesize a linear set of samples along the X path.
+        # No ESP32 at all — full stub: simulate the sweep in real time.
         print(f"[gantry:stub] sweep {cmd}")
-        start_x = _state["x"]
-        span = abs(x_target - start_x)
-        duration = span / speed if speed else 0.0
-        n = max(1, int(duration / sample_interval_s)) if sample_interval_s > 0 else 1
-        samples: list[dict] = []
-        for i in range(n + 1):
-            frac = i / n if n else 1.0
-            xi = start_x + (x_target - start_x) * frac
-            samples.append({"x": round(xi, 1), "tof_cm": 100.0})
-            if not settings.stub_mode:
-                time.sleep(sample_interval_s)
-        return samples
+        return _synthetic_tof_samples(start_x, x_target, speed, sample_interval_s, pace=True)
 
     samples = []
+    tof_absent = False  # True once the ESP32 reports the TOF sensor is unavailable
     with _lock:
         _ser.reset_input_buffer()
         prev_timeout = _ser.timeout
@@ -476,7 +499,15 @@ def _sweep_tof_once(
                 if not raw:
                     continue
                 if raw.startswith("ERR "):
-                    raise RuntimeError(f"ESP32 error: {raw[4:]}")
+                    msg = raw[4:]
+                    if "limit" in msg:
+                        # Motion fault — fatal, abort so the gantry is safed.
+                        raise RuntimeError(f"ESP32 error: {msg}")
+                    # TOF fault (e.g. sensor not ready/unplugged) — non-fatal:
+                    # drop this sample and keep sweeping. Stubbed after the move.
+                    tof_absent = True
+                    awaiting_tof = False
+                    continue
                 if raw.startswith("DONE "):
                     print(f"[gantry] ← {raw}")
                     done = True
@@ -492,6 +523,12 @@ def _sweep_tof_once(
                         xi = payload.get("x", _state["x"])
                         samples.append({"x": float(xi), "tof_cm": round(mm / 10.0, 1)})
                 # else: debug echo — ignore
+
+            # Sensor was unavailable for the whole sweep (unplugged / not ready):
+            # fall back to stub heights so the watering flow still completes.
+            if tof_absent and not samples:
+                print("[gantry] TOF sensor unavailable — using stub heights for sweep")
+                return _synthetic_tof_samples(start_x, x_target, speed, sample_interval_s, pace=False)
 
             return samples
         finally:
