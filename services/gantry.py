@@ -361,9 +361,14 @@ async def move_to(x: float, y: float, z: float, speed: int = 150) -> dict:
         raise RuntimeError(f"Move failed: {e}")
 
 
-# Stub height used when the TOF is unavailable, mirroring hardware.read_tof_distance()
-# so a run without a connected sensor still produces a plausible sweep for testing.
-_STUB_TOF_CM = 100.0
+# Stub TOF distance (cm) used when the sensor is unavailable, so a run without a
+# connected VL53L0X still produces a plausible sweep for testing. Chosen to
+# simulate a maximally-grown plant: with the watering floor reference of 120 cm
+# (WateringConfig.tof_floor_ref_mm) this reads as a ~78 cm plant — the peak of the
+# fuzzy "Produksi" stage — which drives the maximum watering tier. A smaller value
+# (taller apparent plant) would push height past the 98 cm top of the fuzzy sets
+# and paradoxically fire no rule, returning 0 s.
+_STUB_TOF_CM = 42.0
 
 
 def _synthetic_tof_samples(

@@ -128,7 +128,7 @@ async def run_watering_session(
                     # out of col_min_tof so watering falls back to the global min.
                     height_cm = 0.0
                 else:
-                    height_cm = round((config.z_max_mm / 10.0) - min_tof_cm, 1)
+                    height_cm = config.height_cm(min_tof_cm)
                     if col not in col_min_tof or min_tof_cm < col_min_tof[col]:
                         col_min_tof[col] = min_tof_cm
 
@@ -151,9 +151,11 @@ async def run_watering_session(
                     },
                 )
 
-        # Global max height: z_max minus the globally smallest TOF reading
-        global_min_tof = min(col_min_tof.values()) if col_min_tof else 0.0
-        max_height_cm = round((config.z_max_mm / 10.0) - global_min_tof, 1)
+        # Global max height from the globally smallest TOF reading. With no valid
+        # samples at all (total sensor failure) report 0 rather than inventing a
+        # full-height reading, so a dead TOF can't trigger max watering.
+        global_min_tof = min(col_min_tof.values()) if col_min_tof else None
+        max_height_cm = config.height_cm(global_min_tof) if global_min_tof is not None else 0.0
         log.ok("TOF", f"sweep complete — global max_height={max_height_cm:.1f}cm")
         await event_bus.emit(
             str(session_id),
@@ -211,7 +213,7 @@ async def run_watering_session(
         for col in range(config.cols):
             x_mm = config.col_x_mm(col)
             col_min = col_min_tof.get(col, global_min_tof)
-            col_height_cm = round((config.z_max_mm / 10.0) - col_min, 1)
+            col_height_cm = config.height_cm(col_min) if col_min is not None else 0.0
 
             log.step("WATERING", f"moving to col={col} x={x_mm:.0f}mm y={center_y:.0f}mm")
             await gantry_service.move_to(

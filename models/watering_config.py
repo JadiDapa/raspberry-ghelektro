@@ -15,6 +15,11 @@ class WateringConfig(BaseModel):
     start_y_mm: float = Field(default=0.0, ge=0.0, le=Y_MAX_MM)
     z_max_mm: float = Field(default=0.0, ge=0.0, le=Z_MAX_MM)       # Z raised to this for TOF sweep
     z_water_mm: float = Field(default=50.0, ge=0.0, le=Z_MAX_MM)    # Z working height during valve open
+    # Physical calibration: TOF-sensor-to-floor distance with the head fully
+    # raised (Z=0). Plant height = this reference minus the live TOF reading.
+    # This is a rig constant, NOT a gantry coordinate — it is unrelated to
+    # z_max_mm and can exceed the Z travel envelope.
+    tof_floor_ref_mm: float = Field(default=1200.0, gt=0.0, le=5000.0)
     tof_samples: int = Field(default=5, ge=1, le=50)                # legacy (stop-and-scan); kept for payload compat
     tof_sample_hz: float = Field(default=5.0, gt=0.0, le=50.0)      # TOF polls/sec during the continuous sweep
     sweep_speed_mm_sec: float = Field(default=150.0, gt=0.0, le=5000.0)
@@ -34,6 +39,18 @@ class WateringConfig(BaseModel):
                 f"watering Y range [0,{far_y:.0f}]mm outside gantry travel [0,{Y_MAX_MM:.0f}]"
             )
         return self
+
+    def height_cm(self, tof_cm: float) -> float:
+        """Plant height (cm) from a TOF reading taken during the sweep.
+
+        The reference is the sensor→floor distance at the sweep height: with the
+        head fully raised the sensor is `tof_floor_ref_mm` above the floor, and
+        lowering it to the sweep coordinate `z_max_mm` brings it that much
+        closer, so the effective reference is their difference. A taller plant
+        returns a smaller TOF reading, hence a larger height.
+        """
+        ref_cm = (self.tof_floor_ref_mm - self.z_max_mm) / 10.0
+        return round(ref_cm - tof_cm, 1)
 
     def col_x_mm(self, col: int) -> float:
         return self.start_x_mm + col * self.gap_x_mm

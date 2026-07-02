@@ -68,11 +68,21 @@ async def _send(
             async with httpx.AsyncClient(timeout=timeout) as client:
                 r = await client.request(method, url, json=json, files=attempt_files)
             if 400 <= r.status_code < 500:
-                r.raise_for_status()  # client error — fail fast, no retry
+                # Client error — fail fast, no retry. Surface the response body
+                # so a validation/rejection reason is visible in our logs.
+                body = r.text.strip().replace("\n", " ")[:500]
+                raise httpx.HTTPStatusError(
+                    f"{method} {path} → {r.status_code}{f' — {body}' if body else ''}",
+                    request=r.request,
+                    response=r,
+                )
             if r.status_code >= 500:
-                # Treat as retryable server error.
+                # Treat as retryable server error. Include a snippet of the
+                # response body — the dashboard returns the underlying error
+                # message there, which is otherwise invisible in our logs.
+                body = r.text.strip().replace("\n", " ")[:500]
                 last_exc = httpx.HTTPStatusError(
-                    f"{method} {path} → {r.status_code}",
+                    f"{method} {path} → {r.status_code}{f' — {body}' if body else ''}",
                     request=r.request,
                     response=r,
                 )
@@ -92,7 +102,7 @@ async def _send(
 
         if attempt < attempts:
             backoff = settings.sync_backoff_base * (2 ** (attempt - 1))
-            print(f"[pi_client] {method} {path} failed (attempt {attempt}/{attempts}) — retrying in {backoff:.1f}s")
+            print(f"[pi_client] {method} {path} failed (attempt {attempt}/{attempts}: {last_exc}) — retrying in {backoff:.1f}s")
             await asyncio.sleep(backoff)
 
     assert last_exc is not None
