@@ -20,5 +20,8 @@ static/images/
 # YOLO model (large binary — download separately on Pi)
 *.pt
 
+# Per-session models downloaded from the dashboard (cached by checksum)
+models/
+
 frame-selector.py
 vids/*

@@ -11,7 +11,11 @@ class Settings(BaseSettings):
     # ─── Paths ─────────────────────────────────────────────────────────
     images_dir: str = "static/images"
     videos_dir: str = "videos"  # recorded Data Collection sweeps (uploaded then kept)
-    yolo_model_path: str = "best.pt"
+    yolo_model_path: str = "best.pt"  # built-in fallback model, loaded at startup
+    # Where per-session models selected in the dashboard are downloaded + cached
+    # (keyed by checksum). A scan config may pin a specific uploaded model; the
+    # RPi fetches it from the dashboard on first use and reuses it thereafter.
+    models_dir: str = "models"
 
     # ─── ESP32 #1 — Motion (USB serial) ────────────────────────────────
     esp32_port: str = "/dev/ttyUSB0"

@@ -43,6 +43,7 @@ async def run_session(session_id: int, config: ScanConfig | None = None) -> None
 
     log = SessionLogger(str(session_id))
     plant_grid = config.plant_grid()
+    model_handle: dict | None = None  # per-session YOLO model, resolved after homing
     plant_scans: list[dict] = []  # PiPlantScan dicts (carry "_image_bytes" for fallback)
     state = {"sync_dirty": False}
     started_at = _now()
@@ -98,6 +99,17 @@ async def run_session(session_id: int, config: ScanConfig | None = None) -> None
             },
         )
 
+        # ── Resolve per-session YOLO model ─────────────────────────────
+        # A scan config may pin a specific uploaded model; download + load it now
+        # (cached by checksum) so every plant is scanned with the chosen weights.
+        # Non-fatal: on failure we fall back to the built-in model.
+        model_cfg = config.model.model_dump() if config.model is not None else None
+        if model_cfg:
+            log.step("MODEL", f"preparing model {model_cfg.get('name') or model_cfg.get('checksum', '')[:12]}")
+        model_handle = await hardware.prepare_session_model(model_cfg)
+        if model_cfg and model_handle is None:
+            log.warn("MODEL", "selected model unavailable — using built-in model")
+
         # ── Plant scan loop ───────────────────────────────────────────
         for plant_id, (row, col) in enumerate(plant_grid, start=1):
             log.log_plant_start(plant_id, len(plant_grid), row, col)
@@ -150,7 +162,7 @@ async def run_session(session_id: int, config: ScanConfig | None = None) -> None
             # — YOLO inference (FATAL on failure) —
             log.log_yolo_start(image_url or "(local)")
             detections, annotated_bytes = await hardware.run_yolo(
-                image_bytes, roi=(config.roi_w_pct, config.roi_h_pct)
+                image_bytes, roi=(config.roi_w_pct, config.roi_h_pct), handle=model_handle
             )
             total_fruits = sum(d["count"] for d in detections)
             counts = _counts(detections)

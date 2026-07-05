@@ -30,19 +30,33 @@ async def capture_image() -> bytes:
 
 # ─── YOLO ─────────────────────────────────────────────────────────────────────
 
+async def prepare_session_model(model_cfg: dict | None) -> dict | None:
+    """Resolve the per-session YOLO model from a scan config's `model` snapshot.
+
+    Returns an opaque handle to pass to run_yolo, or None to use the built-in
+    model. Non-fatal — see yolo_service.prepare_session_model.
+    """
+    from services.yolo_service import prepare_session_model as _prepare
+    return await _prepare(model_cfg)
+
+
 async def run_yolo(
-    image_bytes: bytes, roi: tuple[float, float] | None = None
+    image_bytes: bytes,
+    roi: tuple[float, float] | None = None,
+    handle: dict | None = None,
 ) -> tuple[list[dict], bytes | None]:
     """Run YOLOv11 inference on JPEG bytes.
 
     `roi` is an optional (w_pct, h_pct) centered counting region: detections whose
     box center falls outside it are dropped so neighboring plants aren't counted.
+    `handle` selects a per-session model (see prepare_session_model); None uses the
+    built-in startup model.
 
     Returns (detections, annotated_jpeg_bytes). The annotated bytes are the frame
     with detection boxes (+ ROI rect) drawn, or None in stub mode / on render failure.
     """
     from services.yolo_service import run_inference_from_bytes
-    return await run_inference_from_bytes(image_bytes, roi)
+    return await run_inference_from_bytes(image_bytes, roi, handle)
 
 
 # ─── Per-plant sensors ────────────────────────────────────────────────────────

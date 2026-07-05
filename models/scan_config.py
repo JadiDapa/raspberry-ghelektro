@@ -16,6 +16,26 @@ class CaptureOffset(BaseModel):
     servo_tilt: float = Field(default=90.0, ge=0.0, le=180.0)
 
 
+class ModelConfig(BaseModel):
+    """A specific uploaded YOLO model this session should run.
+
+    The dashboard bakes this into the scan config snapshot. `file_url` is the
+    dashboard-relative weights URL (/api/uploads/<name>); the RPi prefixes its
+    dashboard_url to download it, caches it by `checksum`, and runs inference
+    with the settings below. When the scan config has no model, this is absent
+    and the RPi falls back to its built-in yolo_model_path.
+    """
+
+    file_url: str
+    checksum: str = ""
+    name: str = ""
+    imgsz: int = Field(default=640, ge=32, le=4096)
+    confidence: float = Field(default=0.25, ge=0.0, le=1.0)
+    iou_nms: float = Field(default=0.7, ge=0.0, le=1.0)
+    max_det: int = Field(default=300, ge=1, le=10000)
+    class_names: list[str] = Field(default_factory=list)
+
+
 class ScanConfig(BaseModel):
     cols: int = Field(default=8, ge=1, le=16)
     rows: int = Field(default=2, ge=1, le=8)
@@ -34,6 +54,9 @@ class ScanConfig(BaseModel):
     # Default 100×100 = whole frame = no filtering (behaves as before).
     roi_w_pct: float = Field(default=100.0, gt=0.0, le=100.0)
     roi_h_pct: float = Field(default=100.0, gt=0.0, le=100.0)
+
+    # Which uploaded model to run. None → use the built-in yolo_model_path.
+    model: ModelConfig | None = None
 
     @model_validator(mode="after")
     def _within_travel(self) -> "ScanConfig":

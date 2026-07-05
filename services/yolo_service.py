@@ -16,13 +16,101 @@ Pi CPU note:
 """
 
 import asyncio
+import hashlib
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+import httpx
 
 from config import settings, FRUIT_CLASSES
 
 # One thread for YOLO — inference is CPU-bound, must not block the event loop
 _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="yolo")
-_model = None  # loaded once on startup
+_model = None  # built-in fallback, loaded once on startup
+
+# Per-session models selected in the dashboard, cached by checksum so a model is
+# downloaded + loaded once and reused across sessions. See prepare_session_model.
+_model_cache: dict[str, object] = {}
+
+
+# ─── Per-session model download + load ────────────────────────────────────────
+
+def _models_dir() -> Path:
+    d = Path(settings.models_dir)
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+async def _download_model(file_url: str, checksum: str) -> str:
+    """Download weights from the dashboard to models_dir, cached by checksum.
+
+    `file_url` is the dashboard-relative URL (/api/uploads/<name>); we prefix
+    settings.dashboard_url. Skips the download when a file for this checksum
+    already exists on disk. Verifies the sha256 when a checksum is provided.
+    Returns the local path.
+    """
+    ext = Path(file_url).suffix or ".pt"
+    dest = _models_dir() / f"{(checksum or 'model')[:16]}{ext}"
+    if dest.exists() and dest.stat().st_size > 0:
+        print(f"[yolo] model cache hit → {dest}")
+        return str(dest)
+
+    base = settings.dashboard_url.rstrip("/")
+    url = file_url if file_url.startswith("http") else f"{base}{file_url}"
+    print(f"[yolo] downloading model {url} → {dest}")
+    async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+        r = await client.get(url)
+        r.raise_for_status()
+        data = r.content
+
+    if checksum:
+        actual = hashlib.sha256(data).hexdigest()
+        if actual != checksum:
+            raise ValueError(
+                f"model checksum mismatch (expected {checksum[:12]}…, got {actual[:12]}…)"
+            )
+    dest.write_bytes(data)
+    print(f"[yolo] model saved ({len(data) / 1_048_576:.1f} MB)")
+    return str(dest)
+
+
+def _load_model_sync(path: str):
+    from ultralytics import YOLO
+
+    m = YOLO(path)
+    return m
+
+
+async def prepare_session_model(model_cfg: dict | None) -> dict | None:
+    """Resolve the model a scan session should run.
+
+    `model_cfg` is the snapshot's `model` sub-object (dict) or None. Returns a
+    handle {model, imgsz, conf, iou, max_det} passed to run_inference, or None to
+    fall back to the built-in startup model. Non-fatal: any download/load failure
+    is logged and returns None so the session still runs on the built-in model.
+    """
+    if not model_cfg or not model_cfg.get("file_url"):
+        return None
+    try:
+        checksum = model_cfg.get("checksum") or ""
+        cache_key = checksum or model_cfg["file_url"]
+        model = _model_cache.get(cache_key)
+        if model is None:
+            path = await _download_model(model_cfg["file_url"], checksum)
+            loop = asyncio.get_running_loop()
+            model = await loop.run_in_executor(_executor, _load_model_sync, path)
+            _model_cache[cache_key] = model
+            print(f"[yolo] session model ready → {model_cfg.get('name') or cache_key}")
+        return {
+            "model": model,
+            "imgsz": int(model_cfg.get("imgsz") or settings.yolo_imgsz),
+            "conf": float(model_cfg.get("confidence") or settings.yolo_confidence),
+            "iou": float(model_cfg.get("iou_nms") or 0.7),
+            "max_det": int(model_cfg.get("max_det") or 300),
+        }
+    except Exception as e:
+        print(f"[yolo] could not prepare session model ({e}) — using built-in model")
+        return None
 
 
 def load_model():
@@ -95,7 +183,7 @@ def _roi_box(arr, roi) -> tuple[float, float, float, float] | None:
     return x0, y0, x0 + bw, y0 + bh
 
 
-def _predict_array(arr, roi=None) -> tuple[list[dict], bytes | None]:
+def _predict_array(arr, roi=None, handle: dict | None = None) -> tuple[list[dict], bytes | None]:
     """
     Run inference on a numpy BGR array.
 
@@ -103,19 +191,31 @@ def _predict_array(arr, roi=None) -> tuple[list[dict], bytes | None]:
     only when its bounding-box center falls inside that box, so fruit on
     neighboring plants visible at the frame edges is ignored.
 
+    `handle` selects a per-session model + its inference settings (see
+    prepare_session_model); None uses the built-in startup model and the global
+    settings.yolo_* values.
+
     Returns (detections, annotated_jpeg_bytes). The annotated frame is the input
     image with YOLO boxes/labels drawn on it (via Ultralytics' result.plot()) plus
     the ROI rectangle, re-encoded as JPEG so it can be uploaded alongside the raw
     capture. It is None in stub mode (no model) or if rendering/encoding fails —
     callers fall back to the raw image in that case.
     """
-    if _model is None:
+    model = handle["model"] if handle else _model
+    imgsz = handle["imgsz"] if handle else settings.yolo_imgsz
+    conf = handle["conf"] if handle else settings.yolo_confidence
+    iou = handle["iou"] if handle else 0.7
+    max_det = handle["max_det"] if handle else 300
+
+    if model is None:
         return _stub_detections(), None
 
-    results = _model.predict(
+    results = model.predict(
         source=arr,
-        imgsz=settings.yolo_imgsz,
-        conf=settings.yolo_confidence,
+        imgsz=imgsz,
+        conf=conf,
+        iou=iou,
+        max_det=max_det,
         verbose=False,
     )
 
@@ -168,21 +268,26 @@ def _render_annotated(results, roi_box=None) -> bytes | None:
     return None
 
 
-def _predict_from_bytes(image_bytes: bytes, roi=None) -> tuple[list[dict], bytes | None]:
+def _predict_from_bytes(
+    image_bytes: bytes, roi=None, handle: dict | None = None
+) -> tuple[list[dict], bytes | None]:
     import cv2
     import numpy as np
 
     arr = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
-    return _predict_array(arr, roi)
+    return _predict_array(arr, roi, handle)
 
 
 async def run_inference_from_bytes(
-    image_bytes: bytes, roi=None
+    image_bytes: bytes, roi=None, handle: dict | None = None
 ) -> tuple[list[dict], bytes | None]:
     """Async wrapper — offloads blocking inference to thread pool.
 
     `roi` is an optional (w_pct, h_pct) centered counting region; see _predict_array.
-    Returns (detections, annotated_jpeg_bytes).
+    `handle` selects a per-session model (see prepare_session_model); None uses the
+    built-in startup model. Returns (detections, annotated_jpeg_bytes).
     """
     loop = asyncio.get_running_loop()  # get_event_loop() is deprecated in 3.10+
-    return await loop.run_in_executor(_executor, _predict_from_bytes, image_bytes, roi)
+    return await loop.run_in_executor(
+        _executor, _predict_from_bytes, image_bytes, roi, handle
+    )
