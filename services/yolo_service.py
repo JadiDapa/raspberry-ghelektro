@@ -250,12 +250,48 @@ def _predict_array(arr, roi=None, handle: dict | None = None) -> tuple[list[dict
     return detections, annotated_bytes
 
 
+# Per-class box colors in BGR, matching the dashboard ripeness palette:
+# red = ripe, orange = turning, green = unripe, black = broken.
+_CLASS_BGR = {
+    "ripe": (68, 68, 239),      # #ef4444
+    "turning": (22, 115, 249),  # #f97316
+    "unripe": (94, 197, 34),    # #22c55e
+    "broken": (0, 0, 0),        # #000000
+}
+_DEFAULT_BGR = (128, 128, 128)  # any unexpected class name
+
+
 def _render_annotated(results, roi_box=None) -> bytes | None:
-    """Draw boxes (+ ROI rect) on the frame and JPEG-encode it. Non-fatal — None on failure."""
+    """Draw class-colored boxes (+ ROI rect) on the frame and JPEG-encode it.
+
+    Boxes are drawn by hand (not Ultralytics' result.plot()) so each fruit class
+    uses the same color as the dashboard charts — red=ripe, orange=turning,
+    green=unripe, black=broken — instead of the default per-index palette.
+    Non-fatal — returns None on failure so callers fall back to the raw image.
+    """
     try:
         import cv2
 
-        annotated = results[0].plot()  # BGR ndarray with boxes + labels drawn
+        result = results[0]
+        annotated = result.orig_img.copy()  # BGR ndarray, no boxes drawn yet
+        names = result.names
+        for det in result.boxes:
+            x0, y0, x1, y1 = (int(round(float(v))) for v in det.xyxy[0])
+            cls_name = names.get(int(det.cls[0]), "").lower()
+            color = _CLASS_BGR.get(cls_name, _DEFAULT_BGR)
+            label = f"{cls_name} {float(det.conf[0]):.2f}"
+
+            cv2.rectangle(annotated, (x0, y0), (x1, y1), color, 2)
+
+            # Filled label chip above the box; white text reads on every class color.
+            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+            top = max(y0, th + 5)
+            cv2.rectangle(annotated, (x0, top - th - 5), (x0 + tw + 4, top), color, -1)
+            cv2.putText(
+                annotated, label, (x0 + 2, top - 4),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA,
+            )
+
         if roi_box is not None:
             x0, y0, x1, y1 = (int(round(v)) for v in roi_box)
             cv2.rectangle(annotated, (x0, y0), (x1, y1), (0, 255, 255), 2)
