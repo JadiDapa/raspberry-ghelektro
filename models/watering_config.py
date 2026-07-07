@@ -15,6 +15,11 @@ class WateringConfig(BaseModel):
     start_y_mm: float = Field(default=0.0, ge=0.0, le=Y_MAX_MM)
     z_max_mm: float = Field(default=0.0, ge=0.0, le=Z_MAX_MM)       # Z raised to this for TOF sweep
     z_water_mm: float = Field(default=50.0, ge=0.0, le=Z_MAX_MM)    # Z working height during valve open
+    # X shift applied only to the watering stops (valve step), not the TOF sweep.
+    # Compensates for the water nozzle being mounted offset from the TOF sensor on
+    # the gantry head, so the nozzle lands over the plant while the sweep stays
+    # centered on it. May be negative.
+    x_offset_mm: float = Field(default=0.0, ge=-X_MAX_MM, le=X_MAX_MM)
     # Physical calibration: TOF-sensor-to-floor distance with the head fully
     # raised (Z=0). Plant height = this reference minus the live TOF reading.
     # This is a rig constant, NOT a gantry coordinate — it is unrelated to
@@ -38,6 +43,15 @@ class WateringConfig(BaseModel):
             raise ValueError(
                 f"watering Y range [0,{far_y:.0f}]mm outside gantry travel [0,{Y_MAX_MM:.0f}]"
             )
+        # The X offset is applied to watering stops only; verify the shifted
+        # near/far watering columns still land inside the travel envelope.
+        water_near_x = self.start_x_mm + self.x_offset_mm
+        water_far_x = far_x + self.x_offset_mm
+        if water_near_x < 0 or water_far_x > X_MAX_MM:
+            raise ValueError(
+                f"watering X range with offset [{water_near_x:.0f},{water_far_x:.0f}]mm "
+                f"outside gantry travel [0,{X_MAX_MM:.0f}]"
+            )
         return self
 
     def height_cm(self, tof_cm: float) -> float:
@@ -54,6 +68,12 @@ class WateringConfig(BaseModel):
 
     def col_x_mm(self, col: int) -> float:
         return self.start_x_mm + col * self.gap_x_mm
+
+    def water_col_x_mm(self, col: int) -> float:
+        """Gantry X for the watering stop over `col` — the plant-centered column
+        X plus the nozzle offset. Used for the valve step only; the TOF sweep
+        stays on the un-offset `col_x_mm`."""
+        return self.col_x_mm(col) + self.x_offset_mm
 
     def row_y_mm(self, row: int) -> float:
         return self.start_y_mm + row * self.gap_y_mm

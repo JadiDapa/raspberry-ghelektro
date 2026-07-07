@@ -38,6 +38,19 @@ SERIAL_READ_TIMEOUT = 1.0  # per readline() call (s) — short so deadline loop 
 COMMAND_TIMEOUT = 10.0  # max wait for OK/ERR on quick commands (s)
 MOVE_TIMEOUT = 300.0  # max wait for DONE on MOVE/HOME (s) — covers a full 6 m traverse
 
+# Hard ceiling on travel speed (mm/s) for EVERY gantry move — scan, watering TOF
+# sweep, and manual control all funnel through move_to()/sweep_tof(), so clamping
+# here caps the whole machine regardless of what a caller or the API requests.
+MAX_SPEED_MMS = 200
+
+
+def _clamp_speed(speed: int) -> int:
+    """Clamp a requested travel speed to the machine-wide MAX_SPEED_MMS ceiling."""
+    if speed > MAX_SPEED_MMS:
+        print(f"[gantry] speed {speed} mm/s capped to {MAX_SPEED_MMS} mm/s")
+        return MAX_SPEED_MMS
+    return speed
+
 # On a COLD power-up the Pi boots before the CH340/CP2102 USB chip has enumerated,
 # so /dev/ttyUSB0 may not exist yet (and the ESP32 firmware may still be booting).
 # connect() retries open + PING for up to CONNECT_TIMEOUT before giving up, so the
@@ -350,6 +363,7 @@ async def move_to(x: float, y: float, z: float, speed: int = 150) -> dict:
     Move gantry to absolute XYZ position in mm.
     Waits until motion completes (DONE response).
     """
+    speed = _clamp_speed(speed)
     _state["busy"] = True
     print(f"[gantry] moving → X={x} Y={y} Z={z} speed={speed}")
     try:
@@ -411,6 +425,7 @@ async def sweep_tof(
     buffer between commands and discard the pending DONE. The ESP32 loop() polls
     serial every iteration and MOVE is async, so it answers TOF mid-move.
     """
+    speed = _clamp_speed(speed)
     _state["busy"] = True
     print(f"[gantry] sweep_tof → X={x_target} Y={y} Z={z} speed={speed} interval={sample_interval_s}s")
     try:

@@ -15,6 +15,14 @@ from config import settings
 CAMERA_DEVICE = settings.camera_device
 JPEG_QUALITY = settings.camera_jpeg_quality
 
+# Native resolution pushed to the device — always a real camera capture mode.
+# The dashboard's requested frame_width/frame_height are the OUTPUT size, produced
+# from this native frame by `_process_frame` (center-crop to aspect + resize). The
+# C922 sensor is 16:9, so a 4:3 output is cropped here rather than requested of the
+# driver, which would just snap 1280×960 back to 1280×720. See config.py.
+CAPTURE_WIDTH = settings.camera_capture_width
+CAPTURE_HEIGHT = settings.camera_capture_height
+
 # Set automatically on startup — True if camera couldn't be opened
 STUB_MODE = False
 
@@ -31,6 +39,10 @@ STUB_MODE = False
 # resolution/fps from config) so a fresh Pi with no dashboard settings behaves
 # exactly as before. The dashboard is where a user opts into manual values.
 _controls: dict = {
+    # OUTPUT dimensions the dashboard receives. Any aspect ratio is allowed; the
+    # camera is captured at CAPTURE_WIDTH×CAPTURE_HEIGHT and each frame is
+    # cropped+resized to this in `_process_frame`. Selecting 4:3 here really does
+    # yield a 4:3 image even though the C922 sensor is natively 16:9.
     "frame_width": settings.camera_width,
     "frame_height": settings.camera_height,
     "fps": settings.camera_fps,
@@ -131,9 +143,13 @@ def _apply_controls(cap: "cv2.VideoCapture", c: dict) -> None:
         if value is not None:
             cap.set(prop, float(value))
 
-    # Resolution / fps first — these may force the driver to renegotiate format.
-    _set(cv2.CAP_PROP_FRAME_WIDTH, c.get("frame_width"))
-    _set(cv2.CAP_PROP_FRAME_HEIGHT, c.get("frame_height"))
+    # Native capture resolution / fps first — these may force the driver to
+    # renegotiate format. We always request the fixed native mode (a resolution the
+    # camera really supports); the dashboard's frame_width/frame_height are the
+    # output size and are synthesized later by `_process_frame`, not asked of the
+    # driver. Requesting an unsupported 4:3 mode just gets snapped back to 16:9.
+    _set(cv2.CAP_PROP_FRAME_WIDTH, CAPTURE_WIDTH)
+    _set(cv2.CAP_PROP_FRAME_HEIGHT, CAPTURE_HEIGHT)
     _set(cv2.CAP_PROP_FPS, c.get("fps"))
 
     # Exposure — turn auto off before writing a manual value.
@@ -189,10 +205,21 @@ def _read_control_values(cap: "cv2.VideoCapture") -> dict:
 
 
 def _read_actuals(cap: "cv2.VideoCapture") -> None:
-    """Read back what the driver granted so the dashboard can show real values."""
+    """Read back what the driver granted so the dashboard can show real values.
+
+    The device is always driven at the native capture resolution, so the raw
+    frame_width/frame_height read off it describe the capture, not the image the
+    dashboard gets. We expose those as capture_width/capture_height and overlay
+    frame_width/frame_height with the OUTPUT size (what `_process_frame` produces),
+    so `actuals.frame_width` matches what the user selected — no phantom mismatch.
+    """
     global _actuals
     values = _read_control_values(cap)
+    values["capture_width"] = values["frame_width"]
+    values["capture_height"] = values["frame_height"]
     with _controls_lock:
+        values["frame_width"] = _controls["frame_width"]
+        values["frame_height"] = _controls["frame_height"]
         _actuals = values
 
 
@@ -416,6 +443,42 @@ def _generate_stub_frame() -> bytes:
     return jpeg.tobytes()
 
 
+# ─── Output framing ───────────────────────────────────────────────────────────
+# The camera captures at a fixed native 16:9 mode; the dashboard picks the output
+# size/aspect. We reconcile the two here: center-crop the native frame to the
+# requested aspect ratio (trimming the longer axis, keeping the middle), then
+# resize to the exact requested dimensions. A 4:3 request on the 16:9 C922 trims
+# the left/right edges and keeps the full vertical field of view — sharp, not
+# stretched or letterboxed. A 16:9 request is a crop-free downscale. This runs on
+# every frame before JPEG encoding, so the MJPEG stream, session snapshots, YOLO
+# input and recorded video all inherit the same framing from the shared buffer.
+
+
+def _process_frame(frame: np.ndarray) -> np.ndarray:
+    with _controls_lock:
+        out_w = _controls["frame_width"]
+        out_h = _controls["frame_height"]
+    if not out_w or not out_h:
+        return frame
+
+    h, w = frame.shape[:2]
+    # Center-crop to the target aspect ratio (compare w/h vs out_w/out_h via
+    # cross-multiplication to avoid float error).
+    if w * out_h > h * out_w:  # frame wider than target → trim width
+        crop_w = h * out_w // out_h
+        x0 = (w - crop_w) // 2
+        frame = frame[:, x0 : x0 + crop_w]
+    elif w * out_h < h * out_w:  # frame taller than target → trim height
+        crop_h = w * out_h // out_w
+        y0 = (h - crop_h) // 2
+        frame = frame[y0 : y0 + crop_h, :]
+
+    # Resize to the exact requested output size (INTER_AREA is best for downscale).
+    if frame.shape[1] != out_w or frame.shape[0] != out_h:
+        frame = cv2.resize(frame, (out_w, out_h), interpolation=cv2.INTER_AREA)
+    return frame
+
+
 # ─── Background capture thread ────────────────────────────────────────────────
 
 
@@ -479,6 +542,7 @@ def _capture_loop():
             cap = _open_and_configure()
             continue
 
+        frame = _process_frame(frame)  # native 16:9 → requested output size/aspect
         _, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
         _buffer.write(jpeg.tobytes())
         prev = now

@@ -29,9 +29,20 @@ class Settings(BaseSettings):
     camera_device: str = "/dev/video0"
 
     # 🔥 SAFE defaults for Raspberry Pi (you can increase later)
+    # These are the OUTPUT dimensions the dashboard receives. Any aspect ratio is
+    # allowed here (e.g. 4:3) — see camera_capture_* below for how it's produced.
     camera_width: int = 640
     camera_height: int = 480
     camera_fps: int = 10
+
+    # Native resolution requested from the webcam. This MUST be a real capture mode
+    # the camera supports (the driver silently snaps unsupported requests to the
+    # nearest one). The Logitech C922 has a 16:9 sensor, so 4:3 output is produced
+    # by center-cropping + resizing this native frame (services/camera.py:_process_frame),
+    # never asked of the driver — asking for 1280×960 just yields 1280×720. 1920×1080
+    # is the C922's sharpest standard 16:9 MJPG mode; crop it down for any output.
+    camera_capture_width: int = 1920
+    camera_capture_height: int = 1080
 
     camera_jpeg_quality: int = 85
     camera_stabilize_delay: float = 1.0

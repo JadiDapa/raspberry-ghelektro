@@ -211,7 +211,7 @@ async def run_watering_session(
         log.log_pump_on()
 
         for col in range(config.cols):
-            x_mm = config.col_x_mm(col)
+            x_mm = config.water_col_x_mm(col)   # plant column X + nozzle offset
             col_min = col_min_tof.get(col, global_min_tof)
             col_height_cm = config.height_cm(col_min) if col_min is not None else 0.0
 
