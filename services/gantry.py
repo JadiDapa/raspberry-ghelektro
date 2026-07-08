@@ -569,6 +569,11 @@ async def move_to_plant_with_config(row: int, col: int, config) -> dict:
       Z>0   → mm below home (working depth)
     """
     x_mm, y_mm = config.plant_position_mm(row, col)
+    # Apply the capture offset so the head lands where the manual "Move to Plant"
+    # jog does. Only Z was being applied before, so session scans parked dead-
+    # center over each plant and ignored the configured X/Y camera offset.
+    x_mm += config.offset.x_offset_mm
+    y_mm += config.offset.y_offset_mm
     z_working = config.offset.z_mm
     z_clear = 10.0
     speed = int(config.travel_speed_mm_sec)
