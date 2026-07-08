@@ -12,7 +12,7 @@ class MoveRequest(BaseModel):
     x: float = Field(..., ge=0, le=6000, description="X position in mm (0–6000)")
     y: float = Field(..., ge=0, le=2000, description="Y position in mm (0–2000)")
     z: float = Field(0.0, ge=0, le=800, description="Z position in mm (0–800)")
-    speed: int = Field(150, ge=1, le=200, description="Travel speed in mm/s (capped at 200)")
+    speed: int = Field(150, ge=1, le=300, description="Travel speed in mm/s (capped at 300)")
 
 
 class RelayRequest(BaseModel):

@@ -41,7 +41,7 @@ MOVE_TIMEOUT = 300.0  # max wait for DONE on MOVE/HOME (s) — covers a full 6 m
 # Hard ceiling on travel speed (mm/s) for EVERY gantry move — scan, watering TOF
 # sweep, and manual control all funnel through move_to()/sweep_tof(), so clamping
 # here caps the whole machine regardless of what a caller or the API requests.
-MAX_SPEED_MMS = 200
+MAX_SPEED_MMS = 300
 
 
 def _clamp_speed(speed: int) -> int:
@@ -571,12 +571,13 @@ async def move_to_plant_with_config(row: int, col: int, config) -> dict:
     x_mm, y_mm = config.plant_position_mm(row, col)
     z_working = config.offset.z_mm
     z_clear = 10.0
+    speed = int(config.travel_speed_mm_sec)
 
     # Raise to clearance first to avoid clipping plants while travelling XY
     if _state["z"] > z_clear:
-        await move_to(_state["x"], _state["y"], z_clear)
+        await move_to(_state["x"], _state["y"], z_clear, speed=speed)
 
-    await move_to(x_mm, y_mm, z_working)
+    await move_to(x_mm, y_mm, z_working, speed=speed)
     return get_state()
 
 

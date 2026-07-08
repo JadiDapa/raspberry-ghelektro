@@ -55,6 +55,10 @@ class ScanConfig(BaseModel):
     roi_w_pct: float = Field(default=100.0, gt=0.0, le=100.0)
     roi_h_pct: float = Field(default=100.0, gt=0.0, le=100.0)
 
+    # Gantry travel speed (mm/s) when jogging plant-to-plant during the scan.
+    # gantry.move_to() clamps it to the machine ceiling (MAX_SPEED_MMS).
+    travel_speed_mm_sec: float = Field(default=150.0, gt=0.0, le=5000.0)
+
     # Which uploaded model to run. None → use the built-in yolo_model_path.
     model: ModelConfig | None = None
 
