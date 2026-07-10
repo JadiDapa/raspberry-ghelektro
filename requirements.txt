@@ -3,9 +3,11 @@ httpx>=0.27.0
 uvicorn[standard]>=0.29.0
 pydantic>=2.0.0
 pydantic-settings>=2.0.0
-opencv-python-headless>=4.9.0
-numpy>=1.26.0
+opencv-python-headless>=4.10.0
+numpy>=2.1.0
 pyserial>=3.5
-ultralytics>=8.2.0
-
 ultralytics>=8.4
+
+# torch/torchvision are pulled in by ultralytics. On a Pi 4 (no GPU) install the
+# CPU build FIRST so pip doesn't grab the multi-GB CUDA aarch64 wheels:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
